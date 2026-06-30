@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -457,6 +458,22 @@ function parseAvailability(){
     STATE.availability[sku].onHand += onHand;
     STATE.availability[sku].available += avail;
     STATE.availability[sku].onOrder += onOrder;
+  });
+  // CIN7 tracks the case-pack purchasing SKU (e.g. 600300-CS6) as its own line in the
+  // availability report, separate from the base component (600300) it converts to upon
+  // receipt. Without this, on-order quantity placed against the case SKU is invisible to
+  // the base component's PO math. Fold it in, converted by the case quantity — CIN7
+  // records On Order against the case SKU in CASES, not already-converted base units.
+  Object.keys(STATE.casePack).forEach(componentSku=>{
+    const cp = STATE.casePack[componentSku];
+    const caseRow = STATE.availability[cp.caseSku];
+    if(!caseRow) return;
+    if(!STATE.availability[componentSku]) STATE.availability[componentSku] = {onHand:0, available:0, onOrder:0};
+    STATE.availability[componentSku].onOrder += caseRow.onOrder * cp.qtyPerCase;
+    // on-hand/available on a case-SKU row would mean un-received case stock not yet
+    // broken into units — fold that in too, just in case it's ever non-zero.
+    STATE.availability[componentSku].onHand += caseRow.onHand * cp.qtyPerCase;
+    STATE.availability[componentSku].available += caseRow.available * cp.qtyPerCase;
   });
 }
 
