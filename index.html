@@ -219,7 +219,7 @@ tr:hover td{background:#fbfaf7;}
   <!-- PANEL 6: PO -->
   <section class="panel" id="panel-po">
     <h2>Purchase order recommendations</h2>
-    <p class="lead">Order-up-to level = forecasted demand over (lead time + target cover). Net need = order-up-to level &minus; (available + on order). Quantities round up to case packs where defined. "Days of supply" shows how long current stock + incoming POs will last at the current use rate &mdash; useful for spotting items you're well covered on, not just ones that need action.</p>
+    <p class="lead">Order-up-to level = forecasted demand over (lead time + target cover). Net need = order-up-to level &minus; (available + on order). For vendors with a container size set (Vendors tab), individual SKU net-needs are pooled and rounded up to a full container, with any leftover space filled as overstock on your best-selling SKUs &mdash; otherwise quantities round up to case packs where defined. "Days of supply" shows how long current stock + incoming POs will last at the current use rate &mdash; useful for spotting items you're well covered on, not just ones that need action.</p>
     <div class="summary-strip" id="poSummary"></div>
     <div id="poByVendor"></div>
   </section>
@@ -262,8 +262,8 @@ const STATE = {
   availability: {},     // sku -> {onHand, available, onOrder}
   cin7Sales: {},        // sku -> qty90
   vendors: [
-    {id:'arcor', name:'Arcor', leadTime:90, kind:'parentAsin', match:'B0FSTHSFBC,B0CK4Z18R9', brandMatch:'ARCOR'},
-    {id:'stephengould', name:'Stephen Gould (packaging)', leadTime:60, kind:'suffix', match:'-SUP', brandMatch:''}
+    {id:'arcor', name:'Arcor', leadTime:90, kind:'parentAsin', match:'B0FSTHSFBC,B0CK4Z18R9', brandMatch:'ARCOR', casesPerPallet:49, palletsPerContainer:22},
+    {id:'stephengould', name:'Stephen Gould (packaging)', leadTime:60, kind:'suffix', match:'-SUP', brandMatch:'', casesPerPallet:0, palletsPerContainer:0}
   ]
 };
 
@@ -626,6 +626,10 @@ function renderVendorCards(){
         </select>
       </div>
       <div class="settings-row"><label>Match value</label><input type="text" style="width:300px" data-v="${idx}" data-f="match" value="${v.match}"><span class="foot-note">comma-separated</span></div>
+      <div class="settings-row"><label>Cases per pallet</label><input type="number" data-v="${idx}" data-f="casesPerPallet" value="${v.casesPerPallet||0}" min="0"></div>
+      <div class="settings-row"><label>Pallets per container</label><input type="number" data-v="${idx}" data-f="palletsPerContainer" value="${v.palletsPerContainer||0}" min="0">
+        <span class="foot-note">${(v.casesPerPallet&&v.palletsPerContainer) ? 'Full container = '+(v.casesPerPallet*v.palletsPerContainer).toLocaleString()+' cases. Set either to 0 to order this vendor without a container minimum.' : 'Set both to enable full-container ordering for this vendor.'}</span>
+      </div>
       <button class="ghost" data-remove="${idx}">Remove</button>
     `;
     wrap.appendChild(card);
@@ -633,7 +637,9 @@ function renderVendorCards(){
   wrap.querySelectorAll('input,select').forEach(el=>{
     el.addEventListener('change', (e)=>{
       const idx = +e.target.dataset.v, f = e.target.dataset.f;
-      STATE.vendors[idx][f] = (f==='leadTime') ? (parseFloat(e.target.value)||0) : e.target.value;
+      const numericFields = ['leadTime','casesPerPallet','palletsPerContainer'];
+      STATE.vendors[idx][f] = numericFields.includes(f) ? (parseFloat(e.target.value)||0) : e.target.value;
+      renderVendorCards();
     });
   });
   wrap.querySelectorAll('[data-remove]').forEach(btn=>{
@@ -644,7 +650,7 @@ function renderVendorCards(){
   });
 }
 document.getElementById('btn-add-vendor').addEventListener('click', ()=>{
-  STATE.vendors.push({id:'vendor'+STATE.vendors.length, name:'New vendor', leadTime:30, kind:'brand', match:''});
+  STATE.vendors.push({id:'vendor'+STATE.vendors.length, name:'New vendor', leadTime:30, kind:'brand', match:'', casesPerPallet:0, palletsPerContainer:0});
   renderVendorCards();
 });
 
@@ -820,11 +826,69 @@ document.getElementById('btn-generate').addEventListener('click', ()=>{
       sku, desc: info.desc, brand: info.brand, vendor: vendorName, leadTime,
       daily: effectiveDaily, monthly: effectiveDaily*30, onHand: avail.onHand, available: avail.available, onOrder: avail.onOrder,
       position, orderUpTo, netNeed, orderQty, orderLabel, caseInfo, daysOfSupply,
-      needsOrder: netNeed>0, arrival
+      needsOrder: netNeed>0, arrival,
+      casePack: STATE.casePack[sku] || null, overstockCases: 0
     });
   });
 
-  RESULT = {finishedDemand, componentDaily, componentMonthly, seasonalActive, poRows, targetCover, defaultLead};
+  // Pool case-pack orders into full containers for any vendor with a container size
+  // configured (e.g. Arcor: 49 cases/pallet × 22 pallets = 1,078 cases/container).
+  // Arcor requires full-container orders, so individual SKU net-needs are summed across
+  // the whole vendor, rounded up to the next container, and any leftover capacity is
+  // filled with overstock on the best-selling SKUs rather than left empty.
+  const containerNotes = {}; // vendor name -> summary string for display
+  STATE.vendors.forEach(v=>{
+    const containerCases = (v.casesPerPallet||0) * (v.palletsPerContainer||0);
+    if(!containerCases) return;
+    const group = poRows.filter(r=> r.vendor===v.name && r.casePack);
+    if(!group.length) return;
+    const neededCases = {};
+    group.forEach(r=> neededCases[r.sku] = r.netNeed>0 ? Math.ceil(r.netNeed / r.casePack.qtyPerCase) : 0);
+    const totalNeeded = Object.values(neededCases).reduce((a,b)=>a+b,0);
+    if(totalNeeded === 0){
+      containerNotes[v.name] = `No order currently needed — nothing meets the ${containerCases.toLocaleString()}-case container minimum.`;
+      return;
+    }
+    const totalContainerCases = Math.ceil(totalNeeded / containerCases) * containerCases;
+    const surplus = totalContainerCases - totalNeeded;
+    const extra = {};
+    if(surplus > 0){
+      const totalWeight = group.reduce((s,r)=>s+Math.max(r.daily,0),0);
+      if(totalWeight > 0){
+        let allocated = 0;
+        group.forEach(r=>{
+          const share = Math.floor(surplus * (Math.max(r.daily,0)/totalWeight));
+          extra[r.sku] = share;
+          allocated += share;
+        });
+        let remainder = surplus - allocated;
+        const bySales = [...group].sort((a,b)=>b.daily-a.daily);
+        let i = 0;
+        while(remainder > 0 && bySales.length){
+          const sku = bySales[i % bySales.length].sku;
+          extra[sku] = (extra[sku]||0) + 1;
+          remainder--; i++;
+        }
+      } else {
+        // no sales velocity data at all — dump surplus on the single largest SKU by net need
+        const top = group.slice().sort((a,b)=>(neededCases[b.sku]||0)-(neededCases[a.sku]||0))[0];
+        if(top) extra[top.sku] = surplus;
+      }
+    }
+    group.forEach(r=>{
+      const cp = r.casePack;
+      const totalCases = (neededCases[r.sku]||0) + (extra[r.sku]||0);
+      r.orderQty = totalCases * cp.qtyPerCase;
+      r.orderLabel = cp.caseSku;
+      r.overstockCases = extra[r.sku]||0;
+      r.caseInfo = totalCases + ' case(s) of ' + cp.qtyPerCase + (r.overstockCases>0 ? ` — incl. ${r.overstockCases} overstock case(s) to fill container` : '');
+      r.needsOrder = totalCases>0;
+    });
+    const containers = totalContainerCases/containerCases;
+    containerNotes[v.name] = `${totalNeeded.toLocaleString()} cases needed → rounded up to ${totalContainerCases.toLocaleString()} cases = ${containers.toLocaleString()} full container${containers!==1?'s':''} (${(totalContainerCases/v.casesPerPallet).toLocaleString()} pallets). ${surplus>0 ? surplus.toLocaleString()+' case(s) of container space filled as overstock on your best-selling SKUs.' : 'Fits exactly — no overstock needed.'}`;
+  });
+
+  RESULT = {finishedDemand, componentDaily, componentMonthly, seasonalActive, poRows, targetCover, defaultLead, containerNotes};
   renderDemand();
   renderComponents();
   renderPO();
@@ -924,7 +988,9 @@ function renderPO(){
     const rows = byVendor[vname].sort((a,b)=> (b.needsOrder-a.needsOrder) || (b.netNeed-a.netNeed));
     const lead = rows[0] ? rows[0].leadTime : '?';
     const block = document.createElement('div');
-    block.innerHTML = `<h3>${vname} — ${lead} day lead time</h3>`;
+    const note = RESULT.containerNotes[vname];
+    block.innerHTML = `<h3>${vname} — ${lead} day lead time</h3>` +
+      (note ? `<p class="foot-note" style="margin:-4px 0 12px; padding:8px 10px; background:#fff; border:1px solid var(--line); border-left:3px solid var(--accent);">${note}</p>` : '');
     const tw = document.createElement('div'); tw.className='tablewrap'; tw.style.maxHeight='420px';
     const table = document.createElement('table');
     table.innerHTML = `<thead><tr>
@@ -937,8 +1003,9 @@ function renderPO(){
     const tbody = table.querySelector('tbody');
     rows.forEach(r=>{
       const tr = document.createElement('tr');
+      const overstockTag = r.overstockCases>0 ? ' <span class="pill" style="background:#f0e2dc; color:var(--accent);">overstock fill</span>' : '';
       const recBadge = r.needsOrder
-        ? `<span class="pill order">Order ${r.orderQty.toLocaleString()}</span> <span style="color:var(--muted); font-size:11px;">${r.orderLabel}${r.caseInfo!=='—'?' ('+r.caseInfo+')':''}</span>`
+        ? `<span class="pill order">Order ${r.orderQty.toLocaleString()}</span> <span style="color:var(--muted); font-size:11px;">${r.orderLabel}${r.caseInfo!=='—'?' ('+r.caseInfo+')':''}</span>${overstockTag}`
         : `<span class="pill hold">No action</span>`;
       const dosLabel = !isFinite(r.daysOfSupply) ? '∞' : r.daysOfSupply.toFixed(0);
       const dosColor = !isFinite(r.daysOfSupply) ? 'var(--ok)' : (r.daysOfSupply < r.leadTime ? 'var(--warn)' : 'var(--ok)');
