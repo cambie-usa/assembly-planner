@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cambie Purchase Planner</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<style>
+:root{
+  --ink:#1b1f23; --paper:#f7f5f1; --line:#dcd6c9; --accent:#a4452e;
+  --accent-soft:#f0e2dc; --ok:#2f6b4f; --warn:#a4452e; --muted:#7a7468;
+  --mono: 'IBM Plex Mono', 'SFMono-Regular', Menlo, monospace;
+  --sans: 'Inter', -apple-system, 'Segoe UI', sans-serif;
+}
+*{box-sizing:border-box;}
+body{
+  margin:0; background:var(--paper); color:var(--ink); font-family:var(--sans);
+  font-size:14px; line-height:1.45;
+}
+header{
+  padding:22px 32px; border-bottom:2px solid var(--ink); display:flex;
+  align-items:baseline; justify-content:space-between; flex-wrap:wrap; gap:8px;
+}
+header h1{margin:0; font-size:20px; letter-spacing:0.01em;}
+header .tag{font-family:var(--mono); font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.08em;}
+nav{display:flex; border-bottom:1px solid var(--line); background:#fff;}
+nav button{
+  font-family:var(--mono); font-size:12px; text-transform:uppercase; letter-spacing:0.06em;
+  background:none; border:none; padding:14px 20px; cursor:pointer; color:var(--muted);
+  border-bottom:2px solid transparent;
+}
+nav button.active{color:var(--ink); border-bottom-color:var(--accent); font-weight:600;}
+nav button:disabled{opacity:0.35; cursor:not-allowed;}
+main{padding:28px 32px 80px; max-width:1280px; margin:0 auto;}
+.panel{display:none;}
+.panel.active{display:block;}
+h2{font-size:16px; margin:0 0 4px;}
+h3{font-size:13px; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted); margin:28px 0 10px;}
+p.lead{color:var(--muted); margin:0 0 20px; max-width:760px;}
+.grid4{display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:16px;}
+.card{
+  background:#fff; border:1px solid var(--line); padding:18px; border-radius:2px;
+}
+.card h4{margin:0 0 4px; font-size:13px;}
+.card .desc{color:var(--muted); font-size:12px; margin-bottom:12px;}
+.card input[type=file]{display:block; width:100%; font-size:12px;}
+.status{font-family:var(--mono); font-size:11px; margin-top:10px; padding:6px 8px; border-radius:2px;}
+.status.pending{color:var(--muted);}
+.status.ok{background:#eaf2ec; color:var(--ok);}
+.status.err{background:var(--accent-soft); color:var(--warn);}
+button.primary{
+  font-family:var(--mono); text-transform:uppercase; letter-spacing:0.05em; font-size:12px;
+  background:var(--ink); color:#fff; border:none; padding:12px 22px; cursor:pointer; border-radius:2px;
+}
+button.primary:disabled{background:#bcb6a8; cursor:not-allowed;}
+button.ghost{
+  font-family:var(--mono); font-size:11px; text-transform:uppercase; background:none;
+  border:1px solid var(--line); padding:6px 10px; cursor:pointer; color:var(--ink); border-radius:2px;
+}
+table{width:100%; border-collapse:collapse; font-size:12.5px; background:#fff;}
+th,td{padding:8px 10px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap;}
+th{font-family:var(--mono); font-size:10.5px; text-transform:uppercase; letter-spacing:0.04em; color:var(--muted); background:#fbfaf7; position:sticky; top:0;}
+tr:hover td{background:#fbfaf7;}
+.num{text-align:right; font-variant-numeric:tabular-nums;}
+.tablewrap{max-height:520px; overflow:auto; border:1px solid var(--line);}
+.pill{font-family:var(--mono); font-size:10px; padding:2px 7px; border-radius:10px; display:inline-block;}
+.pill.raw{background:#eee4d8; color:#7a5230;}
+.pill.pkg{background:#dce6e2; color:#2f6b4f;}
+.pill.order{background:var(--accent); color:#fff;}
+.pill.hold{background:#e8e6df; color:var(--muted);}
+.blocklist label{display:flex; gap:10px; align-items:flex-start; padding:8px 0; border-bottom:1px dashed var(--line); font-size:12.5px;}
+.blocklist input{margin-top:3px;}
+.settings-row{display:flex; gap:14px; align-items:center; margin-bottom:10px; flex-wrap:wrap;}
+.settings-row label{font-size:12px; color:var(--muted); min-width:170px;}
+.settings-row input{font-family:var(--mono); padding:6px 8px; border:1px solid var(--line); border-radius:2px; width:90px;}
+.vendor-card{border:1px solid var(--line); padding:14px 16px; margin-bottom:12px; background:#fff;}
+.vendor-card h4{margin:0 0 8px; font-size:13px;}
+.foot-note{color:var(--muted); font-size:11.5px; margin-top:8px;}
+.summary-strip{display:flex; gap:24px; margin:18px 0 24px; flex-wrap:wrap;}
+.summary-strip .stat{border-left:2px solid var(--accent); padding-left:12px;}
+.summary-strip .stat .v{font-size:22px; font-family:var(--mono); font-weight:600;}
+.summary-strip .stat .l{font-size:11px; color:var(--muted); text-transform:uppercase; letter-spacing:0.04em;}
+.empty{padding:60px 20px; text-align:center; color:var(--muted);}
+.badge-vendor{font-family:var(--mono); font-size:11px; padding:3px 8px; border:1px solid var(--ink); border-radius:2px;}
+.toggle-row{display:flex; align-items:center; gap:8px; margin-bottom:6px;}
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>Cambie Purchase Planner</h1>
+    <div class="tag">Sales forecast → BOM explosion → PO recommendations</div>
+  </div>
+  <div class="tag" id="runMeta">No plan generated yet</div>
+</header>
+
+<nav>
+  <button class="navbtn active" data-panel="upload">1. Data</button>
+  <button class="navbtn" data-panel="blocks" disabled>2. Scope</button>
+  <button class="navbtn" data-panel="vendors" disabled>3. Vendors</button>
+  <button class="navbtn" data-panel="demand" disabled>4. Demand</button>
+  <button class="navbtn" data-panel="components" disabled>5. Components</button>
+  <button class="navbtn" data-panel="po" disabled>6. PO Recommendations</button>
+</nav>
+
+<main>
+
+  <!-- PANEL 1: UPLOAD -->
+  <section class="panel active" id="panel-upload">
+    <h2>Load your exports</h2>
+    <p class="lead">Upload fresh exports each time you run the planner. Nothing is stored on a server &mdash; all parsing happens in your browser, so re-run weekly or monthly with the latest files.</p>
+    <div class="grid4">
+      <div class="card">
+        <h4>Amazon sales (Sellerboard)</h4>
+        <div class="desc">"Group by Parent" dashboard export, .xlsx</div>
+        <input type="file" id="file-amazon" accept=".xlsx,.xls">
+        <div class="status pending" id="status-amazon">Waiting for file&hellip;</div>
+      </div>
+      <div class="card">
+        <h4>CIN7 sales summary</h4>
+        <div class="desc">"Sales by Product Summary" export, .xlsx &mdash; used only for items sold as-is (bulk/B2B), not repacked sizes</div>
+        <input type="file" id="file-cin7" accept=".xlsx,.xls">
+        <div class="status pending" id="status-cin7">Waiting for file&hellip;</div>
+      </div>
+      <div class="card">
+        <h4>Production BOM</h4>
+        <div class="desc">Components &amp; Resources export, .xlsx</div>
+        <input type="file" id="file-bom" accept=".xlsx,.xls">
+        <div class="status pending" id="status-bom">Waiting for file&hellip;</div>
+      </div>
+      <div class="card">
+        <h4>CIN7 availability report</h4>
+        <div class="desc">Multi-bin inventory export, .csv</div>
+        <input type="file" id="file-avail" accept=".csv">
+        <div class="status pending" id="status-avail">Waiting for file&hellip;</div>
+      </div>
+      <div class="card" style="border-color:var(--accent);">
+        <h4>SoStocked monthly forecast <span style="font-weight:400; color:var(--muted);">(optional)</span></h4>
+        <div class="desc">"Projected Forecast Model" export — adds real seasonality instead of a flat run-rate. Uses the "Forecasted Sales Monthly" sheet.</div>
+        <input type="file" id="file-sostocked" accept=".xlsx,.xls">
+        <div class="status pending" id="status-sostocked">Not loaded — will use flat run-rate forecast instead.</div>
+      </div>
+    </div>
+    <p style="margin-top:24px;">
+      <button class="primary" id="btn-to-blocks" disabled>Continue &rarr;</button>
+    </p>
+  </section>
+
+  <!-- PANEL 2: SCOPE / BLOCKS -->
+  <section class="panel" id="panel-blocks">
+    <h2>Choose which Amazon product families to plan</h2>
+    <p class="lead">Sellerboard groups SKUs into families. Tick the families that belong to the vendor batch you're planning &mdash; these will be matched against the BOM and your CIN7 sales below.</p>
+    <div class="card">
+      <div class="blocklist" id="blocklist"></div>
+    </div>
+    <h3>CIN7 direct-sale items</h3>
+    <p class="lead" style="margin-bottom:10px;">The planner only counts a CIN7 sale toward demand when that SKU is a raw/bulk item also sold as-is (e.g. a 6&nbsp;lb bulk bag) &mdash; never a repacked size, which is Amazon-only by your instruction. Review what was detected:</p>
+    <div class="tablewrap" style="max-height:260px;">
+      <table id="cin7table"><thead><tr><th>SKU</th><th>Product</th><th class="num">90-day Qty</th><th>Counted?</th><th>Why</th></tr></thead><tbody></tbody></table>
+    </div>
+    <p style="margin-top:24px;">
+      <button class="primary" id="btn-to-vendors">Continue &rarr;</button>
+    </p>
+  </section>
+
+  <!-- PANEL 3: VENDORS -->
+  <section class="panel" id="panel-vendors">
+    <h2>Vendor &amp; planning settings</h2>
+    <p class="lead">Lead times drive how far ahead each PO needs to go out. Defaults are pre-filled from what you told us &mdash; adjust as needed. As you add vendors beyond Arcor, add a card here.</p>
+    <div id="vendorCards"></div>
+    <button class="ghost" id="btn-add-vendor" style="margin-bottom:20px;">+ Add vendor</button>
+
+    <h3>Global planning target</h3>
+    <div class="settings-row">
+      <label>Target days of cover after PO lands</label>
+      <input type="number" id="targetCover" value="60" min="0">
+      <span class="foot-note">Stock on hand at the moment a PO arrives should still last this many extra days.</span>
+    </div>
+    <div class="settings-row">
+      <label>Default lead time (unmatched components)</label>
+      <input type="number" id="defaultLead" value="30" min="0">
+      <span class="foot-note">Applied to any packaging/raw component that doesn't match a vendor rule below.</span>
+    </div>
+
+    <p style="margin-top:24px;">
+      <button class="primary" id="btn-generate">Generate plan &rarr;</button>
+    </p>
+  </section>
+
+  <!-- PANEL 4: DEMAND -->
+  <section class="panel" id="panel-demand">
+    <h2>Forecasted demand &mdash; finished goods</h2>
+    <p class="lead">Daily run-rate blended from Amazon (365-day total ÷ 365) and, where applicable, CIN7 (90-day total ÷ 90).</p>
+    <div class="summary-strip" id="demandSummary"></div>
+    <div class="tablewrap">
+      <table id="demandTable">
+        <thead><tr><th>SKU</th><th>Product</th><th>Source(s)</th><th class="num">Amazon units (365d)</th><th class="num">CIN7 units (90d)</th><th class="num">Flat daily rate</th><th class="num">Next 90 days (forecast)</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- PANEL 5: COMPONENTS -->
+  <section class="panel" id="panel-components">
+    <h2>BOM explosion &mdash; component demand</h2>
+    <p class="lead">Finished-goods demand exploded through the BOM into raw/bulk and packaging component consumption per day.</p>
+    <div class="tablewrap">
+      <table id="componentTable">
+        <thead><tr><th>Component SKU</th><th>Description</th><th>Type</th><th>Vendor</th><th class="num">Daily use</th><th class="num">Monthly use</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- PANEL 6: PO -->
+  <section class="panel" id="panel-po">
+    <h2>Purchase order recommendations</h2>
+    <p class="lead">Order-up-to level = daily use &times; (lead time + target cover). Net need = order-up-to level &minus; (available + on order). Quantities round up to case packs where defined.</p>
+    <div class="summary-strip" id="poSummary"></div>
+    <div id="poByVendor"></div>
+  </section>
+
+</main>
+
+<script>
+/* ---------------- State ---------------- */
+const STATE = {
+  amazonRaw: null,   // sheet rows
+  cin7Raw: null,
+  bomRaw: null,
+  availRaw: null,    // parsed csv rows
+  sostockedRaw: null, // 'Forecasted Sales Monthly' sheet rows, optional
+  monthBuckets: [],   // [{label, start:Date, end:Date, days}] built from SoStocked headers, relative to today
+  soStockedMonthly: {}, // sku -> array of 10 values (number|null), aligned to monthBuckets
+  blocks: [],        // {parentAsin, title, rows:[{sku,units}], startIdx}
+  componentInfo: {},  // sku -> {desc, brand}
+  assemblyBOM: {},     // assemblySku -> [{componentSku, qtyPer}]
+  assemblyDesc: {},
+  casePack: {},         // componentSku -> {caseSku, qtyPerCase}
+  availability: {},     // sku -> {onHand, available, onOrder}
+  cin7Sales: {},        // sku -> qty90
+  vendors: [
+    {id:'arcor', name:'Arcor', leadTime:90, kind:'parentAsin', match:'B0FSTHSFBC,B0CK4Z18R9', brandMatch:'ARCOR'},
+    {id:'stephengould', name:'Stephen Gould (packaging)', leadTime:60, kind:'suffix', match:'-SUP', brandMatch:''}
+  ]
+};
+
+/* ---------------- File loading ---------------- */
+function setStatus(id, cls, msg){
+  const el = document.getElementById(id);
+  el.className = 'status ' + cls;
+  el.textContent = msg;
+}
+function checkReady(){
+  const ready = STATE.amazonRaw && STATE.cin7Raw && STATE.bomRaw && STATE.availRaw;
+  document.getElementById('btn-to-blocks').disabled = !ready;
+}
+function readXlsx(file, cb){
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try{
+      const wb = XLSX.read(e.target.result, {type:'array'});
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+      cb(null, rows);
+    }catch(err){ cb(err); }
+  };
+  reader.onerror = () => cb(new Error('Could not read file'));
+  reader.readAsArrayBuffer(file);
+}
+function readXlsxSheet(file, sheetName, cb){
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try{
+      const wb = XLSX.read(e.target.result, {type:'array'});
+      const name = wb.SheetNames.includes(sheetName) ? sheetName : wb.SheetNames[0];
+      const ws = wb.Sheets[name];
+      const rows = XLSX.utils.sheet_to_json(ws, {header:1, raw:true, defval:null});
+      cb(null, rows, name);
+    }catch(err){ cb(err); }
+  };
+  reader.onerror = () => cb(new Error('Could not read file'));
+  reader.readAsArrayBuffer(file);
+}
+document.getElementById('file-amazon').addEventListener('change', (e)=>{
+  const f = e.target.files[0]; if(!f) return;
+  readXlsx(f, (err, rows)=>{
+    if(err){ setStatus('status-amazon','err','Failed to parse: '+err.message); return; }
+    STATE.amazonRaw = rows;
+    setStatus('status-amazon','ok', rows.length + ' rows loaded — ' + f.name);
+    checkReady();
+  });
+});
+document.getElementById('file-cin7').addEventListener('change', (e)=>{
+  const f = e.target.files[0]; if(!f) return;
+  readXlsx(f, (err, rows)=>{
+    if(err){ setStatus('status-cin7','err','Failed to parse: '+err.message); return; }
+    STATE.cin7Raw = rows;
+    setStatus('status-cin7','ok', rows.length + ' rows loaded — ' + f.name);
+    checkReady();
+  });
+});
+document.getElementById('file-bom').addEventListener('change', (e)=>{
+  const f = e.target.files[0]; if(!f) return;
+  readXlsx(f, (err, rows)=>{
+    if(err){ setStatus('status-bom','err','Failed to parse: '+err.message); return; }
+    STATE.bomRaw = rows;
+    setStatus('status-bom','ok', rows.length + ' rows loaded — ' + f.name);
+    checkReady();
+  });
+});
+document.getElementById('file-avail').addEventListener('change', (e)=>{
+  const f = e.target.files[0]; if(!f) return;
+  Papa.parse(f, {
+    header:true, skipEmptyLines:true,
+    complete: (res)=>{
+      STATE.availRaw = res.data;
+      setStatus('status-avail','ok', res.data.length + ' rows loaded — ' + f.name);
+      checkReady();
+    },
+    error: (err)=> setStatus('status-avail','err','Failed to parse: '+err.message)
+  });
+});
+document.getElementById('file-sostocked').addEventListener('change', (e)=>{
+  const f = e.target.files[0]; if(!f) return;
+  readXlsxSheet(f, 'Forecasted Sales Monthly', (err, rows, sheetUsed)=>{
+    if(err){ setStatus('status-sostocked','err','Failed to parse: '+err.message); return; }
+    STATE.sostockedRaw = rows;
+    setStatus('status-sostocked','ok', rows.length + ' rows loaded from "' + sheetUsed + '" — ' + f.name);
+  });
+});
+
+/* ---------------- Nav ---------------- */
+function showPanel(name){
+  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.navbtn').forEach(b=>b.classList.remove('active'));
+  document.getElementById('panel-'+name).classList.add('active');
+  document.querySelector('.navbtn[data-panel="'+name+'"]').classList.add('active');
+}
+document.querySelectorAll('.navbtn').forEach(b=>{
+  b.addEventListener('click', ()=>{ if(!b.disabled) showPanel(b.dataset.panel); });
+});
+function unlockNav(...names){
+  names.forEach(n=> document.querySelector('.navbtn[data-panel="'+n+'"]').disabled = false);
+}
+
+/* ---------------- Step: Amazon block detection ---------------- */
+function detectBlocks(rows){
+  // rows[0] = header. Columns: Product,ASIN,SKU,Units,...
+  const blocks = [];
+  let current = null;
+  for(let i=1;i<rows.length;i++){
+    const r = rows[i];
+    if(!r) continue;
+    const product = r[0], asin = r[1], sku = r[2], units = r[3];
+    if((sku === null || sku === undefined || sku === '') ){
+      if(asin){
+        current = {parentAsin: asin, title: product || asin, rows: [], totalUnits: units || 0};
+        blocks.push(current);
+      }
+      continue;
+    }
+    if(current){
+      current.rows.push({sku: String(sku).trim(), units: (typeof units === 'number') ? units : (parseFloat(units)||0), product});
+    }
+  }
+  return blocks;
+}
+
+document.getElementById('btn-to-blocks').addEventListener('click', ()=>{
+  STATE.blocks = detectBlocks(STATE.amazonRaw);
+  renderBlocklist();
+  parseBOM();
+  parseAvailability();
+  parseCin7();
+  parseSoStocked();
+  unlockNav('blocks');
+  showPanel('blocks');
+});
+
+function renderBlocklist(){
+  const wrap = document.getElementById('blocklist');
+  wrap.innerHTML = '';
+  const defaultVendorAsins = STATE.vendors.filter(v=>v.kind==='parentAsin')
+    .flatMap(v=>v.match.split(',').map(s=>s.trim()));
+  STATE.blocks.forEach((b, idx)=>{
+    const id = 'blk_'+idx;
+    const checked = defaultVendorAsins.includes(b.parentAsin) ? 'checked' : '';
+    const label = document.createElement('label');
+    label.innerHTML = `<input type="checkbox" id="${id}" data-idx="${idx}" ${checked}>
+      <span><strong>${b.parentAsin}</strong> &mdash; ${b.title.split('\\n')[0].slice(0,90)}
+      <br><span style="color:var(--muted)">${b.rows.length} SKUs &middot; ${b.totalUnits.toLocaleString()} units / 365d</span></span>`;
+    wrap.appendChild(label);
+  });
+  wrap.querySelectorAll('input[type=checkbox]').forEach(cb=>{
+    cb.addEventListener('change', renderCin7Table);
+  });
+}
+
+/* Returns the bulk/raw component SKUs actually consumed by the currently-checked
+   Amazon families (e.g. 600300), excluding packaging/label/generic-supply components.
+   Used to decide which CIN7 sales rows count as "sold as-is" demand. */
+function getScopedBulkSkus(){
+  const checked = Array.from(document.querySelectorAll('#blocklist input:checked')).map(c=>+c.dataset.idx);
+  const skus = new Set();
+  checked.forEach(idx=>{
+    STATE.blocks[idx].rows.forEach(r=>{
+      const sku = r.sku.replace(/-FBA$/,'');
+      skus.add(sku);
+      (STATE.assemblyBOM[sku]||[]).forEach(c=>{
+        const info = STATE.componentInfo[c.componentSku];
+        if(info && info.brand && info.brand.toUpperCase() !== 'CAMBIE') skus.add(c.componentSku);
+      });
+    });
+  });
+  return skus;
+}
+
+/* ---------------- Step: parse BOM ---------------- */
+function parseBOM(){
+  const rows = STATE.bomRaw;
+  STATE.componentInfo = {}; STATE.assemblyBOM = {}; STATE.casePack = {}; STATE.assemblyDesc = {};
+  for(let i=1;i<rows.length;i++){
+    const r = rows[i]; if(!r) continue;
+    const compSku = r[0], compDesc = r[1], brand = r[2], bomField = r[5], qty = r[7];
+    if(!compSku || !bomField) continue;
+    const csku = String(compSku).trim();
+    STATE.componentInfo[csku] = {desc: compDesc || csku, brand: brand || ''};
+    const colonIdx = String(bomField).indexOf(':');
+    const assySku = (colonIdx>-1 ? String(bomField).slice(0,colonIdx) : String(bomField)).trim();
+    const assyDesc = colonIdx>-1 ? String(bomField).slice(colonIdx+1).trim() : assySku;
+    const q = (typeof qty === 'number') ? qty : (parseFloat(qty)||0);
+    // case-pack pattern: assySku === csku + '-CS' + digits, i.e. this is a purchasing case definition for itself
+    if(assySku.indexOf(csku) === 0 && /-CS\d+$/i.test(assySku)){
+      STATE.casePack[csku] = {caseSku: assySku, qtyPerCase: q};
+      STATE.assemblyDesc[assySku] = assyDesc;
+      continue;
+    }
+    if(!STATE.assemblyBOM[assySku]) STATE.assemblyBOM[assySku] = [];
+    STATE.assemblyBOM[assySku].push({componentSku: csku, qtyPer: q});
+    STATE.assemblyDesc[assySku] = assyDesc;
+  }
+}
+
+/* ---------------- Step: parse availability ---------------- */
+function parseAvailability(){
+  STATE.availability = {};
+  STATE.availRaw.forEach(r=>{
+    const sku = (r.SKU||'').trim();
+    if(!sku) return;
+    const onHand = parseFloat(r.OnHand)||0;
+    const avail = parseFloat(r.Available)||0;
+    const onOrder = parseFloat(r.OnOrder)||0;
+    if(!STATE.availability[sku]) STATE.availability[sku] = {onHand:0, available:0, onOrder:0};
+    STATE.availability[sku].onHand += onHand;
+    STATE.availability[sku].available += avail;
+    STATE.availability[sku].onOrder += onOrder;
+  });
+}
+
+/* ---------------- Step: parse CIN7 sales ---------------- */
+function parseCin7(){
+  STATE.cin7Sales = {};
+  STATE.cin7Product = {};
+  const rows = STATE.cin7Raw;
+  let headerIdx = rows.findIndex(r=>r && r[0]==='SKU');
+  if(headerIdx<0) headerIdx = 0;
+  for(let i=headerIdx+1;i<rows.length;i++){
+    const r = rows[i]; if(!r || !r[0]) continue;
+    const sku = String(r[0]).trim();
+    const product = r[1];
+    const qty = (typeof r[3]==='number') ? r[3] : (parseFloat(r[3])||0);
+    STATE.cin7Sales[sku] = (STATE.cin7Sales[sku]||0) + qty;
+    STATE.cin7Product[sku] = product;
+  }
+  renderCin7Table();
+}
+
+function renderCin7Table(){
+  const tbody = document.querySelector('#cin7table tbody');
+  tbody.innerHTML = '';
+  const scoped = getScopedBulkSkus();
+  Object.keys(STATE.cin7Sales).sort((a,b)=>STATE.cin7Sales[b]-STATE.cin7Sales[a]).forEach(sku=>{
+    const qty = STATE.cin7Sales[sku];
+    const isComponent = !!STATE.componentInfo[sku];
+    const isAlsoAssembly = !!STATE.assemblyBOM[sku];
+    const counted = scoped.has(sku) && isComponent;
+    let why;
+    if(counted) why = 'Sold as-is — bulk component used by a selected family';
+    else if(!isComponent) why = 'Not found in BOM — excluded';
+    else if(isAlsoAssembly) why = 'Repacked finished good — Amazon sales only, per instruction';
+    else why = 'Bulk component, but not part of a currently-checked family';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${sku}</td><td>${(STATE.cin7Product[sku]||'').toString().slice(0,60)}</td>
+      <td class="num">${qty.toLocaleString()}</td>
+      <td>${counted? '<span class="pill order">Counted</span>' : '<span class="pill hold">Excluded</span>'}</td>
+      <td style="white-space:normal; color:var(--muted); font-size:11.5px;">${why}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+/* ---------------- Step: parse SoStocked monthly forecast (optional) ---------------- */
+const MONTH_ABBR = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+function parseMonthLabel(text){
+  // e.g. "Jun. 2026" -> {year:2026, month:5(0-idx)}
+  const m = String(text).match(/([A-Za-z]{3,})\.?\s+(\d{4})/);
+  if(!m) return null;
+  const abbr = m[1].slice(0,3).toLowerCase();
+  if(!(abbr in MONTH_ABBR)) return null;
+  return {year: +m[2], month: MONTH_ABBR[abbr]};
+}
+function parseSoStocked(){
+  STATE.monthBuckets = [];
+  STATE.soStockedMonthly = {};
+  if(!STATE.sostockedRaw) return;
+  const rows = STATE.sostockedRaw;
+  const header = rows[0], labelRow = rows[1];
+  if(!header || !labelRow) return;
+  // find the first "Month N" column index
+  let monthColStart = header.findIndex(h=> h && String(h).trim().toLowerCase().startsWith('month'));
+  if(monthColStart < 0) monthColStart = 3;
+  const labels = [];
+  for(let c = monthColStart; c < header.length; c++){
+    const parsed = parseMonthLabel(labelRow[c]);
+    if(parsed) labels.push({col:c, ...parsed});
+  }
+  const today = new Date(); today.setHours(0,0,0,0);
+  labels.forEach((l, i)=>{
+    const calStart = new Date(l.year, l.month, 1);
+    const calEnd = new Date(l.year, l.month+1, 1); // exclusive
+    // first bucket: if it's the current calendar month, start from today (the rest of this month);
+    // SoStocked's "Month 1" figure represents remaining forecast for the partial month.
+    const start = (i===0 && today >= calStart && today < calEnd) ? today : calStart;
+    const end = calEnd;
+    const days = Math.max(0, Math.round((end - start) / 86400000));
+    STATE.monthBuckets.push({label: labelRow[l.col], start, end, days});
+  });
+  // SKU column: find header named SKU
+  let skuCol = header.findIndex(h=> h && String(h).trim().toUpperCase()==='SKU');
+  if(skuCol < 0) skuCol = 1;
+  for(let r=2; r<rows.length; r++){
+    const row = rows[r]; if(!row) continue;
+    const sku = row[skuCol]; if(!sku) continue;
+    const values = labels.map(l => {
+      const v = row[l.col];
+      return (typeof v === 'number') ? v : (v===null||v===undefined||v==='' ? null : (parseFloat(v)||0));
+    });
+    STATE.soStockedMonthly[String(sku).trim()] = values;
+  }
+}
+
+/* Build a per-finished-good monthly units series aligned to STATE.monthBuckets.
+   Prefers SoStocked's real seasonality; falls back to the flat blended rate
+   (Amazon 365d + CIN7 90d) per bucket where SoStocked has no data for that month. */
+function monthlySeriesFor(sku, flatDailyRate){
+  const buckets = STATE.monthBuckets;
+  if(!buckets.length) return null; // no SoStocked file loaded at all
+  const sos = STATE.soStockedMonthly[sku];
+  return buckets.map((b,i)=>{
+    const sosVal = sos ? sos[i] : null;
+    if(sosVal !== null && sosVal !== undefined) return sosVal;
+    return flatDailyRate * b.days;
+  });
+}
+
+document.getElementById('btn-to-vendors').addEventListener('click', ()=>{
+  renderVendorCards();
+  unlockNav('vendors');
+  showPanel('vendors');
+});
+
+/* ---------------- Vendors panel ---------------- */
+function renderVendorCards(){
+  const wrap = document.getElementById('vendorCards');
+  wrap.innerHTML = '';
+  STATE.vendors.forEach((v, idx)=>{
+    const card = document.createElement('div');
+    card.className = 'vendor-card';
+    card.innerHTML = `
+      <h4>Vendor ${idx+1}</h4>
+      <div class="settings-row"><label>Name</label><input type="text" style="width:220px" data-v="${idx}" data-f="name" value="${v.name}"></div>
+      <div class="settings-row"><label>Lead time (days)</label><input type="number" data-v="${idx}" data-f="leadTime" value="${v.leadTime}"></div>
+      <div class="settings-row"><label>Match by</label>
+        <select data-v="${idx}" data-f="kind">
+          <option value="parentAsin" ${v.kind==='parentAsin'?'selected':''}>Amazon parent ASIN(s)</option>
+          <option value="brand" ${v.kind==='brand'?'selected':''}>BOM brand field</option>
+          <option value="suffix" ${v.kind==='suffix'?'selected':''}>Component SKU suffix</option>
+        </select>
+      </div>
+      <div class="settings-row"><label>Match value</label><input type="text" style="width:300px" data-v="${idx}" data-f="match" value="${v.match}"><span class="foot-note">comma-separated</span></div>
+      <button class="ghost" data-remove="${idx}">Remove</button>
+    `;
+    wrap.appendChild(card);
+  });
+  wrap.querySelectorAll('input,select').forEach(el=>{
+    el.addEventListener('change', (e)=>{
+      const idx = +e.target.dataset.v, f = e.target.dataset.f;
+      STATE.vendors[idx][f] = (f==='leadTime') ? (parseFloat(e.target.value)||0) : e.target.value;
+    });
+  });
+  wrap.querySelectorAll('[data-remove]').forEach(btn=>{
+    btn.addEventListener('click', (e)=>{
+      STATE.vendors.splice(+e.target.dataset.remove,1);
+      renderVendorCards();
+    });
+  });
+}
+document.getElementById('btn-add-vendor').addEventListener('click', ()=>{
+  STATE.vendors.push({id:'vendor'+STATE.vendors.length, name:'New vendor', leadTime:30, kind:'brand', match:''});
+  renderVendorCards();
+});
+
+/* ---------------- Generate plan ---------------- */
+let RESULT = null;
+
+document.getElementById('btn-generate').addEventListener('click', ()=>{
+  const targetCover = parseFloat(document.getElementById('targetCover').value)||0;
+  const defaultLead = parseFloat(document.getElementById('defaultLead').value)||30;
+
+  // 1. selected SKUs from checked blocks
+  const checked = Array.from(document.querySelectorAll('#blocklist input:checked')).map(c=>+c.dataset.idx);
+  const finishedDemand = {}; // sku -> {amazonUnits, cin7Units, dailyRate, sources:Set, product}
+  checked.forEach(idx=>{
+    STATE.blocks[idx].rows.forEach(r=>{
+      let sku = r.sku.replace(/-FBA$/,'');
+      if(!finishedDemand[sku]) finishedDemand[sku] = {amazonUnits:0, cin7Units:0, sources:new Set(), product:r.product};
+      finishedDemand[sku].amazonUnits += r.units;
+      finishedDemand[sku].sources.add('Amazon');
+    });
+  });
+  // 2. Scope which SKUs are eligible for CIN7 direct-sale demand: only the bulk/raw
+  // components actually used by the SELECTED finished goods (e.g. 600300, the 6lb bag
+  // that 600301/600302/etc are repacked from) — not every product company-wide that
+  // happens to share a SKU pattern. Packaging/label/generic-supply components (brand
+  // CAMBIE or blank) are excluded since those aren't "sold as-is" items.
+  const scopedBulkSkus = getScopedBulkSkus();
+  // 2b. add CIN7 direct-sale quantities, scoped to those bulk SKUs only
+  Object.keys(STATE.cin7Sales).forEach(sku=>{
+    if(scopedBulkSkus.has(sku) && STATE.componentInfo[sku]){
+      if(!finishedDemand[sku]) finishedDemand[sku] = {amazonUnits:0, cin7Units:0, sources:new Set(), product: STATE.cin7Product[sku]};
+      finishedDemand[sku].cin7Units += STATE.cin7Sales[sku];
+      finishedDemand[sku].sources.add('CIN7');
+    }
+  });
+  // 3. daily rate (flat blended — used as display fallback and as the fallback rate
+  // for any month a SoStocked series doesn't cover)
+  Object.keys(finishedDemand).forEach(sku=>{
+    const d = finishedDemand[sku];
+    d.amazonDaily = d.amazonUnits/365;
+    d.cin7Daily = d.cin7Units/90;
+    d.dailyRate = d.amazonDaily + d.cin7Daily;
+  });
+
+  const seasonalActive = STATE.monthBuckets.length > 0;
+
+  // 4. Build a monthly units series per finished good (seasonal if SoStocked covers it,
+  // flat fallback otherwise), then explode each month through the BOM separately so
+  // seasonality survives the explosion into raw/packaging component demand.
+  const componentMonthly = {}; // sku -> array aligned to STATE.monthBuckets
+  const componentDaily = {};   // sku -> flat daily qty (always computed, used when no SoStocked file)
+  function explodeFlat(sku, rate){
+    if(rate<=0) return;
+    if(STATE.assemblyBOM[sku] && STATE.assemblyBOM[sku].length){
+      STATE.assemblyBOM[sku].forEach(c=> explodeFlat(c.componentSku, rate*c.qtyPer));
+    } else {
+      componentDaily[sku] = (componentDaily[sku]||0) + rate;
+    }
+  }
+  function explodeMonthly(sku, monthlyUnits){
+    if(STATE.assemblyBOM[sku] && STATE.assemblyBOM[sku].length){
+      STATE.assemblyBOM[sku].forEach(c=>{
+        explodeMonthly(c.componentSku, monthlyUnits.map(u=>u*c.qtyPer));
+      });
+    } else {
+      if(!componentMonthly[sku]) componentMonthly[sku] = STATE.monthBuckets.map(()=>0);
+      monthlyUnits.forEach((u,i)=> componentMonthly[sku][i]+=u);
+    }
+  }
+  Object.keys(finishedDemand).forEach(sku=>{
+    const d = finishedDemand[sku];
+    explodeFlat(sku, d.dailyRate);
+    if(seasonalActive){
+      // amazon portion uses SoStocked seasonality where available; CIN7 portion (not
+      // covered by SoStocked, which is Amazon-only) is added flat across every bucket
+      const sos = STATE.soStockedMonthly[sku];
+      const monthlyUnits = STATE.monthBuckets.map((b,i)=>{
+        const sosVal = sos ? sos[i] : null;
+        const amazonPart = (sosVal !== null && sosVal !== undefined) ? sosVal : d.amazonDaily*b.days;
+        return amazonPart + d.cin7Daily*b.days;
+      });
+      d.monthlyUnits = monthlyUnits; // stash for display
+      explodeMonthly(sku, monthlyUnits);
+    }
+  });
+
+  // 5. assign vendor to each component
+  function vendorFor(sku){
+    const info = STATE.componentInfo[sku] || {desc:sku, brand:''};
+    for(const v of STATE.vendors){
+      const vals = v.match.split(',').map(s=>s.trim()).filter(Boolean);
+      if(v.kind==='brand' && vals.includes((info.brand||'').toUpperCase())) return v;
+      if(v.kind==='suffix' && vals.some(suf=> sku.endsWith(suf))) return v;
+      if(v.kind==='parentAsin' && info.brand && vals.length===0) return null;
+    }
+    // parentAsin-kind vendors don't directly map to components; fall back: brand match for ARCOR-type vendors stored as brandMatch
+    for(const v of STATE.vendors){
+      if(v.brandMatch && (info.brand||'').toUpperCase()===v.brandMatch.toUpperCase()) return v;
+    }
+    return null;
+  }
+
+  // Demand for a component over a future window [today, today+windowDays], in units.
+  // Seasonal path: prorates overlap with each month bucket; extrapolates past the
+  // forecast horizon using the last bucket's daily rate. Flat path: simple multiply.
+  function windowDemand(sku, windowDays, flatDaily){
+    const today = new Date(); today.setHours(0,0,0,0);
+    const windowEnd = new Date(today.getTime() + windowDays*86400000);
+    if(!seasonalActive || !componentMonthly[sku]){
+      return flatDaily * windowDays;
+    }
+    let total = 0;
+    const series = componentMonthly[sku];
+    let lastBucketDailyRate = 0;
+    STATE.monthBuckets.forEach((b,i)=>{
+      const qty = series[i]||0;
+      if(b.days>0) lastBucketDailyRate = qty/b.days;
+      const overlapStart = b.start > today ? b.start : today;
+      const overlapEnd = b.end < windowEnd ? b.end : windowEnd;
+      const overlapDays = Math.max(0, (overlapEnd - overlapStart)/86400000);
+      if(overlapDays>0 && b.days>0) total += (overlapDays/b.days) * qty;
+    });
+    const lastBucketEnd = STATE.monthBuckets[STATE.monthBuckets.length-1].end;
+    if(windowEnd > lastBucketEnd){
+      const remainderDays = (windowEnd - lastBucketEnd)/86400000;
+      total += remainderDays * lastBucketDailyRate;
+    }
+    return total;
+  }
+
+  // 6. PO recommendations
+  const today = new Date();
+  const poRows = [];
+  const allComponentSkus = new Set([...Object.keys(componentDaily), ...Object.keys(componentMonthly)]);
+  allComponentSkus.forEach(sku=>{
+    const info = STATE.componentInfo[sku] || {desc:sku, brand:''};
+    const v = vendorFor(sku);
+    const leadTime = v ? v.leadTime : defaultLead;
+    const vendorName = v ? v.name : 'Unassigned';
+    const daily = componentDaily[sku] || 0;
+    const avail = STATE.availability[sku] || {onHand:0, available:0, onOrder:0};
+    const position = avail.available + avail.onOrder;
+    const windowDays = leadTime + targetCover;
+    const orderUpTo = windowDemand(sku, windowDays, daily);
+    const effectiveDaily = orderUpTo / windowDays; // for display — reflects seasonality if active
+    const netNeed = orderUpTo - position;
+    let orderQty = 0, orderLabel = sku, caseInfo = '';
+    if(netNeed > 0){
+      if(STATE.casePack[sku]){
+        const cp = STATE.casePack[sku];
+        const cases = Math.ceil(netNeed / cp.qtyPerCase);
+        orderQty = cases * cp.qtyPerCase;
+        orderLabel = cp.caseSku;
+        caseInfo = cases + ' case(s) of ' + cp.qtyPerCase;
+      } else {
+        orderQty = Math.ceil(netNeed);
+        caseInfo = '—';
+      }
+    }
+    const arrival = new Date(today.getTime() + leadTime*86400000);
+    poRows.push({
+      sku, desc: info.desc, brand: info.brand, vendor: vendorName, leadTime,
+      daily: effectiveDaily, monthly: effectiveDaily*30, onHand: avail.onHand, available: avail.available, onOrder: avail.onOrder,
+      position, orderUpTo, netNeed, orderQty, orderLabel, caseInfo,
+      needsOrder: netNeed>0, arrival
+    });
+  });
+
+  RESULT = {finishedDemand, componentDaily, componentMonthly, seasonalActive, poRows, targetCover, defaultLead};
+  renderDemand();
+  renderComponents();
+  renderPO();
+  unlockNav('demand','components','po');
+  document.getElementById('runMeta').textContent = 'Plan generated ' + today.toLocaleString();
+  showPanel('demand');
+});
+
+/* ---------------- Render: Demand ---------------- */
+function renderDemand(){
+  const tbody = document.querySelector('#demandTable tbody');
+  tbody.innerHTML = '';
+  const skus = Object.keys(RESULT.finishedDemand).sort((a,b)=>RESULT.finishedDemand[b].dailyRate-RESULT.finishedDemand[a].dailyRate);
+  let totalDaily = 0;
+  skus.forEach(sku=>{
+    const d = RESULT.finishedDemand[sku];
+    totalDaily += d.dailyRate;
+    const next3 = (RESULT.seasonalActive && d.monthlyUnits) ? d.monthlyUnits.slice(0,3).reduce((a,b)=>a+b,0) : d.dailyRate*90;
+    const seasonalNote = (RESULT.seasonalActive && STATE.soStockedMonthly[sku]) ? '<span class="pill ok-pill" style="background:#eaf2ec; color:var(--ok);">seasonal</span>' : (RESULT.seasonalActive ? '<span class="pill hold">flat fallback</span>' : '');
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${sku}</td><td style="white-space:normal; max-width:340px;">${(d.product||'').toString().split('\\n')[0].slice(0,80)}</td>
+      <td>${Array.from(d.sources).join(' + ')} ${seasonalNote}</td>
+      <td class="num">${d.amazonUnits ? d.amazonUnits.toLocaleString() : '—'}</td>
+      <td class="num">${d.cin7Units ? d.cin7Units.toLocaleString() : '—'}</td>
+      <td class="num">${d.dailyRate.toFixed(2)}</td>
+      <td class="num">${next3.toFixed(0)}</td>`;
+    tbody.appendChild(tr);
+  });
+  document.getElementById('demandSummary').innerHTML = `
+    <div class="stat"><div class="v">${skus.length}</div><div class="l">Finished SKUs</div></div>
+    <div class="stat"><div class="v">${totalDaily.toFixed(1)}</div><div class="l">Total run-rate units / day</div></div>
+    <div class="stat"><div class="v">${RESULT.seasonalActive ? 'Seasonal (SoStocked)' : 'Flat run-rate'}</div><div class="l">Forecast mode</div></div>
+  `;
+}
+
+/* ---------------- Render: Components ---------------- */
+function renderComponents(){
+  const tbody = document.querySelector('#componentTable tbody');
+  tbody.innerHTML = '';
+  const rows = [...RESULT.poRows].sort((a,b)=>b.daily-a.daily);
+  rows.forEach(r=>{
+    const isPkg = r.sku.endsWith('-SUP');
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${r.sku}</td><td style="white-space:normal; max-width:340px;">${r.desc}</td>
+      <td><span class="pill ${isPkg?'pkg':'raw'}">${isPkg?'Packaging':'Raw/Bulk'}</span></td>
+      <td><span class="badge-vendor">${r.vendor}</span></td>
+      <td class="num">${r.daily.toFixed(3)}</td>
+      <td class="num">${r.monthly.toFixed(1)}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+/* ---------------- Render: PO ---------------- */
+function renderPO(){
+  const wrap = document.getElementById('poByVendor');
+  wrap.innerHTML = '';
+  const byVendor = {};
+  RESULT.poRows.forEach(r=>{
+    if(!byVendor[r.vendor]) byVendor[r.vendor] = [];
+    byVendor[r.vendor].push(r);
+  });
+  const toOrder = RESULT.poRows.filter(r=>r.needsOrder).length;
+  document.getElementById('poSummary').innerHTML = `
+    <div class="stat"><div class="v">${RESULT.poRows.length}</div><div class="l">Components tracked</div></div>
+    <div class="stat"><div class="v">${toOrder}</div><div class="l">Need a PO now</div></div>
+  `;
+  Object.keys(byVendor).sort().forEach(vname=>{
+    const rows = byVendor[vname].sort((a,b)=> (b.needsOrder-a.needsOrder) || (b.netNeed-a.netNeed));
+    const lead = rows[0] ? rows[0].leadTime : '?';
+    const block = document.createElement('div');
+    block.innerHTML = `<h3>${vname} — ${lead} day lead time</h3>`;
+    const tw = document.createElement('div'); tw.className='tablewrap'; tw.style.maxHeight='420px';
+    const table = document.createElement('table');
+    table.innerHTML = `<thead><tr>
+      <th>SKU</th><th>Description</th><th class="num">Daily use</th>
+      <th class="num">On hand</th><th class="num">Available</th><th class="num">On order</th>
+      <th class="num">Order-up-to</th><th class="num">Net need</th>
+      <th>Recommendation</th><th>Arrival if ordered today</th>
+    </tr></thead><tbody></tbody>`;
+    const tbody = table.querySelector('tbody');
+    rows.forEach(r=>{
+      const tr = document.createElement('tr');
+      const recBadge = r.needsOrder
+        ? `<span class="pill order">Order ${r.orderQty.toLocaleString()}</span> <span style="color:var(--muted); font-size:11px;">${r.orderLabel}${r.caseInfo!=='—'?' ('+r.caseInfo+')':''}</span>`
+        : `<span class="pill hold">No action</span>`;
+      tr.innerHTML = `<td>${r.sku}</td><td style="white-space:normal; max-width:300px;">${r.desc}</td>
+        <td class="num">${r.daily.toFixed(2)}</td>
+        <td class="num">${r.onHand.toFixed(0)}</td>
+        <td class="num">${r.available.toFixed(0)}</td>
+        <td class="num">${r.onOrder.toFixed(0)}</td>
+        <td class="num">${r.orderUpTo.toFixed(0)}</td>
+        <td class="num" style="color:${r.netNeed>0?'var(--warn)':'var(--ok)'}">${r.netNeed.toFixed(0)}</td>
+        <td>${recBadge}</td>
+        <td>${r.needsOrder ? r.arrival.toLocaleDateString() : '—'}</td>`;
+      tbody.appendChild(tr);
+    });
+    tw.appendChild(table);
+    block.appendChild(tw);
+    wrap.appendChild(block);
+  });
+}
+</script>
+</body>
+</html>
