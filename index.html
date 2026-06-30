@@ -104,6 +104,7 @@ tr:hover td{background:#fbfaf7;}
   <button class="navbtn" data-panel="demand" disabled>4. Demand</button>
   <button class="navbtn" data-panel="components" disabled>5. Components</button>
   <button class="navbtn" data-panel="po" disabled>6. PO Recommendations</button>
+  <button class="navbtn" data-panel="b2b" disabled>7. B2B Forecast</button>
 </nav>
 
 <main>
@@ -218,9 +219,27 @@ tr:hover td{background:#fbfaf7;}
   <!-- PANEL 6: PO -->
   <section class="panel" id="panel-po">
     <h2>Purchase order recommendations</h2>
-    <p class="lead">Order-up-to level = daily use &times; (lead time + target cover). Net need = order-up-to level &minus; (available + on order). Quantities round up to case packs where defined.</p>
+    <p class="lead">Order-up-to level = forecasted demand over (lead time + target cover). Net need = order-up-to level &minus; (available + on order). Quantities round up to case packs where defined. "Days of supply" shows how long current stock + incoming POs will last at the current use rate &mdash; useful for spotting items you're well covered on, not just ones that need action.</p>
     <div class="summary-strip" id="poSummary"></div>
     <div id="poByVendor"></div>
+  </section>
+
+  <!-- PANEL 7: B2B FORECAST -->
+  <section class="panel" id="panel-b2b">
+    <h2>B2B / bulk forecast (CIN7)</h2>
+    <p class="lead">These are the bulk SKUs sold as-is through CIN7 (e.g. the 6&nbsp;lb bag) &mdash; the same ones flagged "Counted" on the Scope tab. There's no monthly B2B history yet, so this is a flat projection from your 90-day run-rate, not a true seasonal forecast like the Amazon side. Use the growth adjustment below if you know B2B is trending up or down from that average.</p>
+    <div class="settings-row">
+      <label>Manual growth/decline, % per month</label>
+      <input type="number" id="b2bGrowth" value="0" step="1">
+      <span class="foot-note">Positive = growing, negative = declining. Compounds monthly across the projection windows below.</span>
+      <button class="ghost" id="btn-recalc-b2b">Recalculate</button>
+    </div>
+    <div class="tablewrap">
+      <table id="b2bTable">
+        <thead><tr><th>SKU</th><th>Product</th><th class="num">90-day actual</th><th class="num">Daily rate</th><th class="num">Next 30d</th><th class="num">Next 60d</th><th class="num">Next 90d</th><th class="num">Next 180d</th><th class="num">Next 365d</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
   </section>
 
 </main>
@@ -631,6 +650,7 @@ document.getElementById('btn-add-vendor').addEventListener('click', ()=>{
 
 /* ---------------- Generate plan ---------------- */
 let RESULT = null;
+let RESULT_B2B_BASE = []; // sku-level CIN7 bulk run-rate, independent of B2B growth-rate slider
 
 document.getElementById('btn-generate').addEventListener('click', ()=>{
   const targetCover = parseFloat(document.getElementById('targetCover').value)||0;
@@ -654,13 +674,16 @@ document.getElementById('btn-generate').addEventListener('click', ()=>{
   // CAMBIE or blank) are excluded since those aren't "sold as-is" items.
   const scopedBulkSkus = getScopedBulkSkus();
   // 2b. add CIN7 direct-sale quantities, scoped to those bulk SKUs only
+  const b2bBase = []; // for the B2B Forecast tab — same SKUs flagged "Counted" on the Scope tab
   Object.keys(STATE.cin7Sales).forEach(sku=>{
     if(scopedBulkSkus.has(sku) && STATE.componentInfo[sku]){
       if(!finishedDemand[sku]) finishedDemand[sku] = {amazonUnits:0, cin7Units:0, sources:new Set(), product: STATE.cin7Product[sku]};
       finishedDemand[sku].cin7Units += STATE.cin7Sales[sku];
       finishedDemand[sku].sources.add('CIN7');
+      b2bBase.push({sku, product: STATE.cin7Product[sku], qty90: STATE.cin7Sales[sku], dailyRate: STATE.cin7Sales[sku]/90});
     }
   });
+  RESULT_B2B_BASE = b2bBase;
   // 3. daily rate (flat blended — used as display fallback and as the fallback rate
   // for any month a SoStocked series doesn't cover)
   Object.keys(finishedDemand).forEach(sku=>{
@@ -786,10 +809,17 @@ document.getElementById('btn-generate').addEventListener('click', ()=>{
       }
     }
     const arrival = new Date(today.getTime() + leadTime*86400000);
+    // Days of supply: how long current position (available + on order) lasts at the
+    // near-term use rate. Uses the rate from the first month bucket when seasonal data
+    // is active (most relevant to "right now"), otherwise the flat daily rate.
+    const nearTermDaily = (seasonalActive && componentMonthly[sku] && STATE.monthBuckets[1] && STATE.monthBuckets[1].days>0)
+      ? componentMonthly[sku][1]/STATE.monthBuckets[1].days
+      : daily;
+    const daysOfSupply = nearTermDaily>0 ? position/nearTermDaily : (position>0 ? Infinity : 0);
     poRows.push({
       sku, desc: info.desc, brand: info.brand, vendor: vendorName, leadTime,
       daily: effectiveDaily, monthly: effectiveDaily*30, onHand: avail.onHand, available: avail.available, onOrder: avail.onOrder,
-      position, orderUpTo, netNeed, orderQty, orderLabel, caseInfo,
+      position, orderUpTo, netNeed, orderQty, orderLabel, caseInfo, daysOfSupply,
       needsOrder: netNeed>0, arrival
     });
   });
@@ -798,10 +828,37 @@ document.getElementById('btn-generate').addEventListener('click', ()=>{
   renderDemand();
   renderComponents();
   renderPO();
-  unlockNav('demand','components','po');
+  renderB2B();
+  unlockNav('demand','components','po','b2b');
   document.getElementById('runMeta').textContent = 'Plan generated ' + today.toLocaleString();
   showPanel('demand');
 });
+
+/* ---------------- Render: B2B Forecast ---------------- */
+function renderB2B(){
+  const tbody = document.querySelector('#b2bTable tbody');
+  tbody.innerHTML = '';
+  const growthPct = parseFloat(document.getElementById('b2bGrowth').value) || 0;
+  const g = growthPct/100;
+  const windows = [30,60,90,180,365];
+  RESULT_B2B_BASE.sort((a,b)=>b.dailyRate-a.dailyRate).forEach(row=>{
+    const projections = windows.map(days=>{
+      const monthlyCompounding = Math.pow(1+g, days/30);
+      return row.dailyRate * days * monthlyCompounding;
+    });
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${row.sku}</td><td style="white-space:normal; max-width:300px;">${(row.product||'').toString().slice(0,70)}</td>
+      <td class="num">${row.qty90.toLocaleString()}</td>
+      <td class="num">${row.dailyRate.toFixed(2)}</td>
+      ${projections.map(p=>`<td class="num">${p.toFixed(0)}</td>`).join('')}`;
+    tbody.appendChild(tr);
+  });
+  if(RESULT_B2B_BASE.length===0){
+    tbody.innerHTML = `<tr><td colspan="9" style="color:var(--muted); text-align:center; padding:24px;">No CIN7 bulk SKUs detected for the currently-selected families. Check the Scope tab.</td></tr>`;
+  }
+}
+document.getElementById('btn-recalc-b2b').addEventListener('click', renderB2B);
+document.getElementById('b2bGrowth').addEventListener('change', renderB2B);
 
 /* ---------------- Render: Demand ---------------- */
 function renderDemand(){
@@ -857,9 +914,11 @@ function renderPO(){
     byVendor[r.vendor].push(r);
   });
   const toOrder = RESULT.poRows.filter(r=>r.needsOrder).length;
+  const wellCovered = RESULT.poRows.filter(r=>!r.needsOrder && isFinite(r.daysOfSupply)).length;
   document.getElementById('poSummary').innerHTML = `
     <div class="stat"><div class="v">${RESULT.poRows.length}</div><div class="l">Components tracked</div></div>
     <div class="stat"><div class="v">${toOrder}</div><div class="l">Need a PO now</div></div>
+    <div class="stat"><div class="v">${wellCovered}</div><div class="l">Well covered (no action)</div></div>
   `;
   Object.keys(byVendor).sort().forEach(vname=>{
     const rows = byVendor[vname].sort((a,b)=> (b.needsOrder-a.needsOrder) || (b.netNeed-a.netNeed));
@@ -871,6 +930,7 @@ function renderPO(){
     table.innerHTML = `<thead><tr>
       <th>SKU</th><th>Description</th><th class="num">Daily use</th>
       <th class="num">On hand</th><th class="num">Available</th><th class="num">On order</th>
+      <th class="num">Days of supply</th>
       <th class="num">Order-up-to</th><th class="num">Net need</th>
       <th>Recommendation</th><th>Arrival if ordered today</th>
     </tr></thead><tbody></tbody>`;
@@ -880,11 +940,14 @@ function renderPO(){
       const recBadge = r.needsOrder
         ? `<span class="pill order">Order ${r.orderQty.toLocaleString()}</span> <span style="color:var(--muted); font-size:11px;">${r.orderLabel}${r.caseInfo!=='—'?' ('+r.caseInfo+')':''}</span>`
         : `<span class="pill hold">No action</span>`;
+      const dosLabel = !isFinite(r.daysOfSupply) ? '∞' : r.daysOfSupply.toFixed(0);
+      const dosColor = !isFinite(r.daysOfSupply) ? 'var(--ok)' : (r.daysOfSupply < r.leadTime ? 'var(--warn)' : 'var(--ok)');
       tr.innerHTML = `<td>${r.sku}</td><td style="white-space:normal; max-width:300px;">${r.desc}</td>
         <td class="num">${r.daily.toFixed(2)}</td>
         <td class="num">${r.onHand.toFixed(0)}</td>
         <td class="num">${r.available.toFixed(0)}</td>
         <td class="num">${r.onOrder.toFixed(0)}</td>
+        <td class="num" style="color:${dosColor}; font-weight:600;">${dosLabel}</td>
         <td class="num">${r.orderUpTo.toFixed(0)}</td>
         <td class="num" style="color:${r.netNeed>0?'var(--warn)':'var(--ok)'}">${r.netNeed.toFixed(0)}</td>
         <td>${recBadge}</td>
