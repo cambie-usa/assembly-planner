@@ -87,6 +87,23 @@ tr:hover td{background:#fbfaf7;}
 .empty{padding:60px 20px; text-align:center; color:var(--muted);}
 .badge-vendor{font-family:var(--mono); font-size:11px; padding:3px 8px; border:1px solid var(--ink); border-radius:2px;}
 .toggle-row{display:flex; align-items:center; gap:8px; margin-bottom:6px;}
+
+@media print{
+  nav, button, input, select{display:none !important;}
+  body{background:#fff;}
+  header{border-bottom:2px solid #000; padding:0 0 12px;}
+  main{max-width:100%; padding:0;}
+  .panel{display:none !important;}
+  .panel.active{display:block !important;}
+  .tablewrap{max-height:none !important; overflow:visible !important; border:1px solid #ccc;}
+  table{font-size:9px;}
+  th{position:static; background:#f0f0f0 !important; -webkit-print-color-adjust:exact; print-color-adjust:exact;}
+  .pill{border:1px solid #999; -webkit-print-color-adjust:exact; print-color-adjust:exact;}
+  h3{page-break-after:avoid;}
+  table{page-break-inside:auto;}
+  tr{page-break-inside:avoid;}
+  .card, .vendor-card{break-inside:avoid;}
+}
 </style>
 </head>
 <body>
@@ -96,7 +113,10 @@ tr:hover td{background:#fbfaf7;}
     <h1>Cambie Purchase Planner</h1>
     <div class="tag">Sales forecast → BOM explosion → PO recommendations</div>
   </div>
-  <div class="tag" id="runMeta">No plan generated yet</div>
+  <div style="display:flex; align-items:center; gap:16px;">
+    <div class="tag" id="runMeta">No plan generated yet</div>
+    <button class="ghost" id="btn-export-pdf">⎙ Export current tab to PDF</button>
+  </div>
 </header>
 
 <nav>
@@ -279,7 +299,7 @@ tr:hover td{background:#fbfaf7;}
   <!-- PANEL 9: POUNDS FORECAST -->
   <section class="panel" id="panel-pounds">
     <h2>Total pounds forecast, by flavor</h2>
-    <p class="lead">Every channel a flavor is sold through, converted into a single "lbs of candy" number per flavor &mdash; bulk bags sold directly (Amazon + CIN7) and every repacked retail size (1&nbsp;lb, 2&nbsp;lb, 8&nbsp;oz bags etc, Amazon only) all traced back through the BOM to the base bulk bag and summed. This reuses the exact same demand figures driving your PO recommendations, just regrouped by flavor and expressed in pounds instead of split across dozens of SKUs and units.</p>
+    <p class="lead">Every channel a flavor is sold through, converted into a single "lbs of candy" number per flavor &mdash; bulk bags sold directly (Amazon + CIN7) and every repacked retail size (1&nbsp;lb, 2&nbsp;lb, 8&nbsp;oz bags etc, Amazon only) all traced back through the BOM to the base bulk bag and summed. This reuses the exact same demand figures driving your PO recommendations, just regrouped by flavor and expressed in pounds instead of split across dozens of SKUs and units. The monthly table below uses SoStocked's real seasonality where available and extends to a full rolling 12 months with a flat run-rate beyond that; B2B/CIN7 demand is averaged evenly across all 12 months since there's no monthly B2B history yet.</p>
     <div class="summary-strip" id="poundsSummary"></div>
     <div id="poundsByVendor"></div>
   </section>
@@ -417,6 +437,12 @@ document.querySelectorAll('.navbtn').forEach(b=>{
 function unlockNav(...names){
   names.forEach(n=> document.querySelector('.navbtn[data-panel="'+n+'"]').disabled = false);
 }
+document.getElementById('btn-export-pdf').addEventListener('click', ()=>{
+  // Uses the browser's native print dialog ("Save as PDF") rather than a JS PDF library —
+  // zero dependencies, and print CSS above hides everything except the currently active
+  // tab so the export is a clean report, not a screenshot of the whole app.
+  window.print();
+});
 
 /* ---------------- Step: Amazon block detection ---------------- */
 function detectBlocks(rows){
@@ -761,6 +787,7 @@ let RESULT = null;
 let RESULT_B2B_BASE = []; // sku-level CIN7 bulk run-rate, independent of B2B growth-rate slider
 let RESULT_AFFILIATE_BASE = []; // repacked SKUs sold to affiliate via CIN7, for the coverage tab
 let RESULT_POUNDS = []; // per-flavor total-pounds rows for the Pounds Forecast tab
+let RESULT_POUNDS_CALENDAR = []; // 12 month labels aligned to each row's monthlyLbs array
 
 document.getElementById('btn-generate').addEventListener('click', ()=>{
   const targetCover = parseFloat(document.getElementById('targetCover').value)||0;
@@ -1034,6 +1061,55 @@ document.getElementById('btn-generate').addEventListener('click', ()=>{
     const qty = parseFloat(m[1]);
     return m[2].toUpperCase()==='OZ' ? qty/16 : qty;
   }
+
+  // A true rolling 12-month calendar for the Pounds Forecast monthly breakdown — separate
+  // from STATE.monthBuckets (which only spans whatever SoStocked provides, ~9-10 months)
+  // so the monthly table always shows a full year. Re-uses SoStocked's real seasonal
+  // months where available, then extends with additional synthetic full calendar months.
+  // CIN7/B2B demand is added as its flat 90-day-average daily rate × days in each month —
+  // i.e. averaged evenly across all 12 months, exactly as requested, since there's no
+  // monthly B2B history to show real seasonality from yet.
+  function buildTwelveMonthCalendar(){
+    const today = new Date(); today.setHours(0,0,0,0);
+    const buckets = [];
+    if(STATE.monthBuckets.length>0){
+      STATE.monthBuckets.forEach(b=>buckets.push(b));
+    } else {
+      const calStart = new Date(today.getFullYear(), today.getMonth(), 1);
+      const calEnd = new Date(today.getFullYear(), today.getMonth()+1, 1);
+      buckets.push({label: calStart.toLocaleString('en-US',{month:'short',year:'numeric'}), start: today, end: calEnd, days: Math.max(0, Math.round((calEnd-today)/86400000))});
+    }
+    while(buckets.length < 12){
+      const last = buckets[buckets.length-1];
+      const start = last.end;
+      const end = new Date(start.getFullYear(), start.getMonth()+1, 1);
+      const days = Math.round((end-start)/86400000);
+      buckets.push({label: start.toLocaleString('en-US',{month:'short',year:'numeric'}), start, end, days});
+    }
+    return buckets.slice(0,12);
+  }
+  const calendar12 = buildTwelveMonthCalendar();
+  const componentMonthlyUnits12 = {};
+  function explodeMonthly12(sku, monthlyUnits){
+    if(STATE.assemblyBOM[sku] && STATE.assemblyBOM[sku].length){
+      STATE.assemblyBOM[sku].forEach(c=> explodeMonthly12(c.componentSku, monthlyUnits.map(u=>u*c.qtyPer)));
+    } else {
+      if(!componentMonthlyUnits12[sku]) componentMonthlyUnits12[sku] = calendar12.map(()=>0);
+      monthlyUnits.forEach((u,i)=> componentMonthlyUnits12[sku][i]+=u);
+    }
+  }
+  Object.keys(finishedDemand).forEach(sku=>{
+    const d = finishedDemand[sku];
+    const sos = STATE.soStockedMonthly[sku];
+    const monthlyUnits = calendar12.map((b,i)=>{
+      const sosVal = sos ? sos[i] : null; // undefined beyond SoStocked's own horizon — falls back below
+      const amazonPart = (sosVal!==null && sosVal!==undefined) ? sosVal : d.amazonDaily*b.days;
+      return amazonPart + d.cin7Daily*b.days;
+    });
+    explodeMonthly12(sku, monthlyUnits);
+  });
+  RESULT_POUNDS_CALENDAR = calendar12.map(b=>b.label);
+
   const poundsRows = [];
   Object.keys(STATE.casePack).forEach(sku=>{
     const info = STATE.componentInfo[sku]; if(!info) return;
@@ -1041,13 +1117,15 @@ document.getElementById('btn-generate').addEventListener('click', ()=>{
     if(!lbsPerUnit) return;
     const dailyUnits = componentDaily[sku] || 0;
     const monthlyUnits = componentMonthly[sku] || null;
-    if(dailyUnits<=0 && (!monthlyUnits || monthlyUnits.every(u=>u<=0))) return;
+    const monthlyUnits12 = componentMonthlyUnits12[sku] || calendar12.map(()=>0);
+    if(dailyUnits<=0 && (!monthlyUnits || monthlyUnits.every(u=>u<=0)) && monthlyUnits12.every(u=>u<=0)) return;
     const v = vendorFor(sku);
     const next90Units = windowDemand(sku, 90, dailyUnits);
     const next365Units = windowDemand(sku, 365, dailyUnits);
     poundsRows.push({
       sku, flavor: info.desc.replace(/-\s*[\d.]+\s*(LB|OZ)$/i,'').trim(), vendor: v?v.name:'Unassigned',
-      lbsPerUnit, dailyLbs: dailyUnits*lbsPerUnit, next90Lbs: next90Units*lbsPerUnit, next365Lbs: next365Units*lbsPerUnit
+      lbsPerUnit, dailyLbs: dailyUnits*lbsPerUnit, next90Lbs: next90Units*lbsPerUnit, next365Lbs: next365Units*lbsPerUnit,
+      monthlyLbs: monthlyUnits12.map(u=>u*lbsPerUnit)
     });
   });
   RESULT_POUNDS = poundsRows;
@@ -1181,6 +1259,34 @@ function renderPounds(){
     tw.appendChild(table);
     block.appendChild(tw);
     wrap.appendChild(block);
+
+    // Monthly breakdown — 12-month rolling calendar, seasonal where SoStocked covers it,
+    // flat run-rate beyond that horizon. B2B/CIN7 demand is spread evenly across all 12
+    // months (its flat 90-day average × days in each month) since there's no monthly B2B
+    // history yet to show real seasonality from.
+    const monthlyBlock = document.createElement('div');
+    monthlyBlock.innerHTML = `<h3 style="margin-top:16px;">${vname} — monthly breakdown (lbs)</h3>`;
+    const mtw = document.createElement('div'); mtw.className='tablewrap'; mtw.style.maxHeight='520px';
+    const mtable = document.createElement('table');
+    mtable.innerHTML = `<thead><tr>
+      <th class="wrap" style="min-width:220px;">Flavor</th><th>Base SKU</th>
+      ${RESULT_POUNDS_CALENDAR.map(l=>`<th class="num">${l}</th>`).join('')}
+    </tr></thead><tbody></tbody>`;
+    const mtbody = mtable.querySelector('tbody');
+    rows.forEach(r=>{
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td class="wrap">${r.flavor}</td><td>${r.sku}</td>
+        ${r.monthlyLbs.map(v=>`<td class="num">${v.toFixed(0)}</td>`).join('')}`;
+      mtbody.appendChild(tr);
+    });
+    const monthTotals = RESULT_POUNDS_CALENDAR.map((_,i)=> rows.reduce((s,r)=>s+(r.monthlyLbs[i]||0),0));
+    const mTotalTr = document.createElement('tr');
+    mTotalTr.style.fontWeight = '600';
+    mTotalTr.innerHTML = `<td colspan="2">TOTAL — ${vname}</td>${monthTotals.map(v=>`<td class="num">${v.toFixed(0)}</td>`).join('')}`;
+    mtbody.appendChild(mTotalTr);
+    mtw.appendChild(mtable);
+    monthlyBlock.appendChild(mtw);
+    wrap.appendChild(monthlyBlock);
   });
   if(RESULT_POUNDS.length===0){
     wrap.innerHTML = `<p style="color:var(--muted); text-align:center; padding:40px;">No flavors with a parseable weight (e.g. "...- 6 LB") found in the currently-selected scope.</p>`;
