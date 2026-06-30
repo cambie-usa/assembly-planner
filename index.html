@@ -108,6 +108,7 @@ tr:hover td{background:#fbfaf7;}
   <button class="navbtn" data-panel="po" disabled>6. PO Recommendations</button>
   <button class="navbtn" data-panel="b2b" disabled>7. B2B Forecast</button>
   <button class="navbtn" data-panel="affiliate" disabled>8. Affiliate Coverage</button>
+  <button class="navbtn" data-panel="pounds" disabled>9. Pounds Forecast</button>
 </nav>
 
 <main>
@@ -273,6 +274,14 @@ tr:hover td{background:#fbfaf7;}
         <tbody></tbody>
       </table>
     </div>
+  </section>
+
+  <!-- PANEL 9: POUNDS FORECAST -->
+  <section class="panel" id="panel-pounds">
+    <h2>Total pounds forecast, by flavor</h2>
+    <p class="lead">Every channel a flavor is sold through, converted into a single "lbs of candy" number per flavor &mdash; bulk bags sold directly (Amazon + CIN7) and every repacked retail size (1&nbsp;lb, 2&nbsp;lb, 8&nbsp;oz bags etc, Amazon only) all traced back through the BOM to the base bulk bag and summed. This reuses the exact same demand figures driving your PO recommendations, just regrouped by flavor and expressed in pounds instead of split across dozens of SKUs and units.</p>
+    <div class="summary-strip" id="poundsSummary"></div>
+    <div id="poundsByVendor"></div>
   </section>
 
 </main>
@@ -751,6 +760,7 @@ document.getElementById('btn-add-vendor').addEventListener('click', ()=>{
 let RESULT = null;
 let RESULT_B2B_BASE = []; // sku-level CIN7 bulk run-rate, independent of B2B growth-rate slider
 let RESULT_AFFILIATE_BASE = []; // repacked SKUs sold to affiliate via CIN7, for the coverage tab
+let RESULT_POUNDS = []; // per-flavor total-pounds rows for the Pounds Forecast tab
 
 document.getElementById('btn-generate').addEventListener('click', ()=>{
   const targetCover = parseFloat(document.getElementById('targetCover').value)||0;
@@ -1012,13 +1022,44 @@ document.getElementById('btn-generate').addEventListener('click', ()=>{
     containerNotes[v.name] = `${totalBasePallets.toLocaleString()} pallet(s) needed (rounded per SKU) → rounded up to ${totalContainerPallets.toLocaleString()} pallets = ${containers.toLocaleString()} full container${containers!==1?'s':''} (${(totalContainerPallets*casesPerPallet).toLocaleString()} cases). ${surplusPallets>0 ? surplusPallets.toLocaleString()+' pallet(s) of container space filled as overstock on your best-selling SKUs.' : 'Fits exactly — no overstock needed.'}`;
   });
 
+  // Pounds forecast: regroup the same component demand by flavor, in pounds. Eligible
+  // components are raw bulk ingredients (purchased by the case — packaging like -SUP/-LBL
+  // is excluded) whose description ends in a parseable weight (e.g. "ARCOR STRAWBERRY
+  // CANDY - 6 LB"). This reuses componentDaily/componentMonthly exactly as computed for
+  // the PO engine — i.e. Amazon-sold repacked sizes + Amazon/CIN7 bulk-as-is sales, with
+  // CIN7-to-affiliate repack sales already excluded to avoid double-counting.
+  function parseLbsPerUnit(desc){
+    const m = String(desc||'').match(/-\s*([\d.]+)\s*(LB|OZ)$/i);
+    if(!m) return null;
+    const qty = parseFloat(m[1]);
+    return m[2].toUpperCase()==='OZ' ? qty/16 : qty;
+  }
+  const poundsRows = [];
+  Object.keys(STATE.casePack).forEach(sku=>{
+    const info = STATE.componentInfo[sku]; if(!info) return;
+    const lbsPerUnit = parseLbsPerUnit(info.desc);
+    if(!lbsPerUnit) return;
+    const dailyUnits = componentDaily[sku] || 0;
+    const monthlyUnits = componentMonthly[sku] || null;
+    if(dailyUnits<=0 && (!monthlyUnits || monthlyUnits.every(u=>u<=0))) return;
+    const v = vendorFor(sku);
+    const next90Units = windowDemand(sku, 90, dailyUnits);
+    const next365Units = windowDemand(sku, 365, dailyUnits);
+    poundsRows.push({
+      sku, flavor: info.desc.replace(/-\s*[\d.]+\s*(LB|OZ)$/i,'').trim(), vendor: v?v.name:'Unassigned',
+      lbsPerUnit, dailyLbs: dailyUnits*lbsPerUnit, next90Lbs: next90Units*lbsPerUnit, next365Lbs: next365Units*lbsPerUnit
+    });
+  });
+  RESULT_POUNDS = poundsRows;
+
   RESULT = {finishedDemand, componentDaily, componentMonthly, seasonalActive, poRows, targetCover, defaultLead, containerNotes};
   renderDemand();
   renderComponents();
   renderPO();
   renderB2B();
   renderAffiliate();
-  unlockNav('demand','components','po','b2b','affiliate');
+  renderPounds();
+  unlockNav('demand','components','po','b2b','affiliate','pounds');
   document.getElementById('runMeta').textContent = 'Plan generated ' + today.toLocaleString();
   showPanel('demand');
 });
@@ -1093,6 +1134,58 @@ function renderAffiliate(){
 document.getElementById('btn-recalc-affiliate').addEventListener('click', renderAffiliate);
 document.getElementById('affLeadTime').addEventListener('change', renderAffiliate);
 document.getElementById('affTargetCover').addEventListener('change', renderAffiliate);
+
+/* ---------------- Render: Pounds Forecast ---------------- */
+function renderPounds(){
+  const wrap = document.getElementById('poundsByVendor');
+  wrap.innerHTML = '';
+  const byVendor = {};
+  RESULT_POUNDS.forEach(r=>{ if(!byVendor[r.vendor]) byVendor[r.vendor]=[]; byVendor[r.vendor].push(r); });
+  const totalDailyLbs = RESULT_POUNDS.reduce((s,r)=>s+r.dailyLbs,0);
+  const totalNext90 = RESULT_POUNDS.reduce((s,r)=>s+r.next90Lbs,0);
+  document.getElementById('poundsSummary').innerHTML = `
+    <div class="stat"><div class="v">${RESULT_POUNDS.length}</div><div class="l">Flavors tracked</div></div>
+    <div class="stat"><div class="v">${totalDailyLbs.toFixed(0)}</div><div class="l">Total lbs / day, all flavors</div></div>
+    <div class="stat"><div class="v">${totalNext90.toLocaleString(undefined,{maximumFractionDigits:0})}</div><div class="l">Total lbs, next 90 days</div></div>
+  `;
+  Object.keys(byVendor).sort().forEach(vname=>{
+    const rows = byVendor[vname].sort((a,b)=>b.dailyLbs-a.dailyLbs);
+    const vendorTotal = rows.reduce((s,r)=>s+r.dailyLbs,0);
+    const vendorTotal90 = rows.reduce((s,r)=>s+r.next90Lbs,0);
+    const vendorTotal365 = rows.reduce((s,r)=>s+r.next365Lbs,0);
+    const block = document.createElement('div');
+    block.innerHTML = `<h3>${vname} — ${vendorTotal.toFixed(0)} lbs/day across ${rows.length} flavor${rows.length!==1?'s':''}</h3>`;
+    const tw = document.createElement('div'); tw.className='tablewrap'; tw.style.maxHeight='520px';
+    const table = document.createElement('table');
+    table.innerHTML = `<thead><tr>
+      <th class="wrap" style="min-width:240px;">Flavor</th><th>Base SKU</th><th class="num">Lbs / unit</th>
+      <th class="num">Lbs / day</th><th class="num">Lbs, next 90 days</th><th class="num">Lbs, next 365 days</th>
+    </tr></thead><tbody></tbody>`;
+    const tbody = table.querySelector('tbody');
+    rows.forEach(r=>{
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td class="wrap">${r.flavor}</td><td>${r.sku}</td>
+        <td class="num">${r.lbsPerUnit}</td>
+        <td class="num">${r.dailyLbs.toFixed(1)}</td>
+        <td class="num">${r.next90Lbs.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+        <td class="num">${r.next365Lbs.toLocaleString(undefined,{maximumFractionDigits:0})}</td>`;
+      tbody.appendChild(tr);
+    });
+    const totalTr = document.createElement('tr');
+    totalTr.style.fontWeight = '600';
+    totalTr.innerHTML = `<td colspan="3">TOTAL — ${vname}</td>
+      <td class="num">${vendorTotal.toFixed(1)}</td>
+      <td class="num">${vendorTotal90.toLocaleString(undefined,{maximumFractionDigits:0})}</td>
+      <td class="num">${vendorTotal365.toLocaleString(undefined,{maximumFractionDigits:0})}</td>`;
+    tbody.appendChild(totalTr);
+    tw.appendChild(table);
+    block.appendChild(tw);
+    wrap.appendChild(block);
+  });
+  if(RESULT_POUNDS.length===0){
+    wrap.innerHTML = `<p style="color:var(--muted); text-align:center; padding:40px;">No flavors with a parseable weight (e.g. "...- 6 LB") found in the currently-selected scope.</p>`;
+  }
+}
 
 /* ---------------- Render: Demand ---------------- */
 function renderDemand(){
