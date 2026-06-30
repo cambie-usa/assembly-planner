@@ -105,6 +105,7 @@ tr:hover td{background:#fbfaf7;}
   <button class="navbtn" data-panel="components" disabled>5. Components</button>
   <button class="navbtn" data-panel="po" disabled>6. PO Recommendations</button>
   <button class="navbtn" data-panel="b2b" disabled>7. B2B Forecast</button>
+  <button class="navbtn" data-panel="affiliate" disabled>8. Affiliate Coverage</button>
 </nav>
 
 <main>
@@ -143,6 +144,12 @@ tr:hover td{background:#fbfaf7;}
         <div class="desc">"Projected Forecast Model" export — adds real seasonality instead of a flat run-rate. Uses the "Forecasted Sales Monthly" sheet.</div>
         <input type="file" id="file-sostocked" accept=".xlsx,.xls">
         <div class="status pending" id="status-sostocked">Not loaded — will use flat run-rate forecast instead.</div>
+      </div>
+      <div class="card" style="border-color:var(--accent);">
+        <h4>Amazon/FBA inventory (Sellerboard) <span style="font-weight:400; color:var(--muted);">(optional)</span></h4>
+        <div class="desc">Sellerboard inventory export — shows Amazon FBA/AWD stock for context on the Affiliate Coverage tab (how much runway your affiliate has left). Kept separate from domestic CIN7 stock, not summed into it, and not used for raw-material PO math. We only read raw stock figures (FBA/FBM Stock, Sent to FBA, AWD Stock, On-hand stock, Estimated Sales Velocity) — Sellerboard's own "Recommended quantity for reordering" column is ignored entirely.</div>
+        <input type="file" id="file-amzinv" accept=".xlsx,.xls">
+        <div class="status pending" id="status-amzinv">Not loaded — Affiliate Coverage tab will show domestic figures only.</div>
       </div>
     </div>
     <p style="margin-top:24px;">
@@ -242,6 +249,30 @@ tr:hover td{background:#fbfaf7;}
     </div>
   </section>
 
+  <!-- PANEL 8: AFFILIATE REPACK COVERAGE -->
+  <section class="panel" id="panel-affiliate">
+    <h2>Repacked-goods coverage for affiliate orders (CIN7)</h2>
+    <p class="lead">These are the repacked retail-size SKUs (e.g. 600454, 600460) you sell to your affiliate company via CIN7, who then lists them on Amazon. <strong>These CIN7 sales are intentionally excluded from raw-material demand</strong> &mdash; counting them would double-count against the Amazon sales Sellerboard already reports for the same end-customer purchase. This view instead answers a different question: do you have enough <em>finished, already-repacked</em> inventory on hand to keep fulfilling those affiliate orders without a production gap?</p>
+    <div class="settings-row">
+      <label>Production lead time (days)</label>
+      <input type="number" id="affLeadTime" value="14" min="0">
+      <span class="foot-note">How long it takes to repack/produce a fresh batch of these sizes once you decide to run them.</span>
+    </div>
+    <div class="settings-row">
+      <label>Target days of cover after a run</label>
+      <input type="number" id="affTargetCover" value="30" min="0">
+      <button class="ghost" id="btn-recalc-affiliate">Recalculate</button>
+    </div>
+    <div class="summary-strip" id="affiliateSummary"></div>
+    <p class="foot-note" style="margin-bottom:10px;">"On hand (domestic)" and "Days of supply" use only your CIN7 warehouse stock and drive the production recommendation &mdash; that's what determines whether you can fulfill the <em>next</em> affiliate order. The Amazon FBA+AWD columns are shown for context only (how much runway your affiliate has left at Amazon) and deliberately don't affect the production math, since that stock has already left your warehouse.</p>
+    <div class="tablewrap">
+      <table id="affiliateTable">
+        <thead><tr><th>SKU</th><th>Product</th><th class="num">90-day CIN7 qty</th><th class="num">Daily rate</th><th class="num">On hand (domestic)</th><th class="num">Days of supply (domestic)</th><th class="num">Production-up-to</th><th class="num">Net need</th><th>Recommendation</th><th class="num">Amazon FBA+AWD stock</th><th class="num">Amazon days left</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
 </main>
 
 <script>
@@ -252,6 +283,8 @@ const STATE = {
   bomRaw: null,
   availRaw: null,    // parsed csv rows
   sostockedRaw: null, // 'Forecasted Sales Monthly' sheet rows, optional
+  amazonInvRaw: null, // Sellerboard inventory export rows, optional
+  amazonInventory: {}, // sku -> {fbaFbm, sentToFba, awd, onHand, velocity} — kept separate from domestic availability
   monthBuckets: [],   // [{label, start:Date, end:Date, days}] built from SoStocked headers, relative to today
   soStockedMonthly: {}, // sku -> array of 10 values (number|null), aligned to monthBuckets
   blocks: [],        // {parentAsin, title, rows:[{sku,units}], startIdx}
@@ -351,6 +384,14 @@ document.getElementById('file-sostocked').addEventListener('change', (e)=>{
     setStatus('status-sostocked','ok', rows.length + ' rows loaded from "' + sheetUsed + '" — ' + f.name);
   });
 });
+document.getElementById('file-amzinv').addEventListener('change', (e)=>{
+  const f = e.target.files[0]; if(!f) return;
+  readXlsx(f, (err, rows)=>{
+    if(err){ setStatus('status-amzinv','err','Failed to parse: '+err.message); return; }
+    STATE.amazonInvRaw = rows;
+    setStatus('status-amzinv','ok', rows.length + ' rows loaded — ' + f.name);
+  });
+});
 
 /* ---------------- Nav ---------------- */
 function showPanel(name){
@@ -394,6 +435,7 @@ document.getElementById('btn-to-blocks').addEventListener('click', ()=>{
   renderBlocklist();
   parseBOM();
   parseAvailability();
+  parseAmazonInventory();
   parseCin7();
   parseSoStocked();
   unlockNav('blocks');
@@ -494,6 +536,49 @@ function parseAvailability(){
     STATE.availability[componentSku].onHand += caseRow.onHand * cp.qtyPerCase;
     STATE.availability[componentSku].available += caseRow.available * cp.qtyPerCase;
   });
+}
+
+/* ---------------- Step: parse Sellerboard Amazon/FBA inventory (optional) ---------------- */
+function normHeader(s){ return String(s||'').replace(/\s+/g,' ').trim().toLowerCase(); }
+function parseAmazonInventory(){
+  STATE.amazonInventory = {};
+  if(!STATE.amazonInvRaw) return;
+  const rows = STATE.amazonInvRaw;
+  const header = rows[0]; if(!header) return;
+  const colIdx = {};
+  header.forEach((h,i)=> colIdx[normHeader(h)] = i);
+  const skuCol = colIdx['sku'];
+  const fbaFbmCol = colIdx['fba/fbm stock'];
+  const sentToFbaCol = colIdx['sent to fba'];
+  const awdCol = colIdx['awd stock'];
+  const onHandCol = colIdx['on-hand stock'];
+  const velocityCol = colIdx['estimated sales velocity'];
+  if(skuCol===undefined){ return; } // unrecognized format — silently skip rather than break the run
+  for(let r=1; r<rows.length; r++){
+    const row = rows[r]; if(!row) continue;
+    const rawSku = row[skuCol]; if(!rawSku) continue;
+    // SKU column can list multiple aliases for the same item, e.g. "600301, 600301-FBA" —
+    // dedupe to base SKUs (stripping -FBA) so the same physical stock isn't double-counted.
+    const baseSkus = new Set(String(rawSku).split(',').map(s=>s.trim().replace(/-FBA$/,'')).filter(Boolean));
+    const fbaFbm = (fbaFbmCol!==undefined && typeof row[fbaFbmCol]==='number') ? row[fbaFbmCol] : 0;
+    const sentToFba = (sentToFbaCol!==undefined && typeof row[sentToFbaCol]==='number') ? row[sentToFbaCol] : 0;
+    const awd = (awdCol!==undefined && typeof row[awdCol]==='number') ? row[awdCol] : 0;
+    const onHand = (onHandCol!==undefined && typeof row[onHandCol]==='number') ? row[onHandCol] : 0;
+    const velocity = (velocityCol!==undefined && typeof row[velocityCol]==='number') ? row[velocityCol] : 0;
+    baseSkus.forEach(sku=>{
+      if(!STATE.amazonInventory[sku]) STATE.amazonInventory[sku] = {fbaFbm:0, sentToFba:0, awd:0, onHand:0, velocity:0};
+      STATE.amazonInventory[sku].fbaFbm += fbaFbm;
+      STATE.amazonInventory[sku].sentToFba += sentToFba;
+      STATE.amazonInventory[sku].awd += awd;
+      STATE.amazonInventory[sku].onHand += onHand;
+      STATE.amazonInventory[sku].velocity += velocity;
+    });
+  }
+  // Deliberately NOT folded into STATE.availability: FBA/AWD stock is inventory already
+  // shipped to Amazon/your affiliate — it answers "how much runway does Amazon have left,"
+  // not "does Cambie have enough domestic stock to fulfill the NEXT order." Mixing the two
+  // would understate how soon a production run or PO is actually needed. Kept as a separate
+  // dataset and shown alongside, not summed into, the domestic CIN7 figures.
 }
 
 /* ---------------- Step: parse CIN7 sales ---------------- */
@@ -657,6 +742,7 @@ document.getElementById('btn-add-vendor').addEventListener('click', ()=>{
 /* ---------------- Generate plan ---------------- */
 let RESULT = null;
 let RESULT_B2B_BASE = []; // sku-level CIN7 bulk run-rate, independent of B2B growth-rate slider
+let RESULT_AFFILIATE_BASE = []; // repacked SKUs sold to affiliate via CIN7, for the coverage tab
 
 document.getElementById('btn-generate').addEventListener('click', ()=>{
   const targetCover = parseFloat(document.getElementById('targetCover').value)||0;
@@ -673,6 +759,29 @@ document.getElementById('btn-generate').addEventListener('click', ()=>{
       finishedDemand[sku].sources.add('Amazon');
     });
   });
+
+  // Affiliate repack coverage (for the new tab): repacked retail-size SKUs that are
+  // BOTH sold on Amazon (in the currently-selected families) AND have CIN7 sales
+  // recorded (the affiliate transfer) — i.e. exactly the SKUs whose CIN7 quantity we
+  // are deliberately NOT counting toward raw-material demand, to avoid double-counting
+  // against the same end-customer sale Sellerboard already reports.
+  const affiliateBase = [];
+  Object.keys(finishedDemand).forEach(sku=>{
+    if(STATE.assemblyBOM[sku] && STATE.cin7Sales[sku]){
+      const avail = STATE.availability[sku] || {onHand:0, available:0, onOrder:0};
+      const amz = STATE.amazonInventory[sku] || null;
+      const amzAvailable = amz ? (amz.fbaFbm + amz.sentToFba + amz.awd) : null;
+      const amzDaysLeft = (amz && amz.velocity>0) ? amzAvailable/amz.velocity : null;
+      affiliateBase.push({
+        sku, product: finishedDemand[sku].product || STATE.cin7Product[sku],
+        qty90: STATE.cin7Sales[sku], dailyRate: STATE.cin7Sales[sku]/90,
+        onHand: avail.onHand, available: avail.available, onOrder: avail.onOrder,
+        amzAvailable, amzDaysLeft
+      });
+    }
+  });
+  RESULT_AFFILIATE_BASE = affiliateBase;
+
   // 2. Scope which SKUs are eligible for CIN7 direct-sale demand: only the bulk/raw
   // components actually used by the SELECTED finished goods (e.g. 600300, the 6lb bag
   // that 600301/600302/etc are repacked from) — not every product company-wide that
@@ -893,7 +1002,8 @@ document.getElementById('btn-generate').addEventListener('click', ()=>{
   renderComponents();
   renderPO();
   renderB2B();
-  unlockNav('demand','components','po','b2b');
+  renderAffiliate();
+  unlockNav('demand','components','po','b2b','affiliate');
   document.getElementById('runMeta').textContent = 'Plan generated ' + today.toLocaleString();
   showPanel('demand');
 });
@@ -923,6 +1033,51 @@ function renderB2B(){
 }
 document.getElementById('btn-recalc-b2b').addEventListener('click', renderB2B);
 document.getElementById('b2bGrowth').addEventListener('change', renderB2B);
+
+/* ---------------- Render: Affiliate repack coverage ---------------- */
+function renderAffiliate(){
+  const tbody = document.querySelector('#affiliateTable tbody');
+  tbody.innerHTML = '';
+  const leadTime = parseFloat(document.getElementById('affLeadTime').value)||0;
+  const targetCover = parseFloat(document.getElementById('affTargetCover').value)||0;
+  let needsRun = 0;
+  const rows = [...RESULT_AFFILIATE_BASE].sort((a,b)=>b.dailyRate-a.dailyRate);
+  rows.forEach(row=>{
+    const position = row.available + row.onOrder;
+    const daysOfSupply = row.dailyRate>0 ? position/row.dailyRate : (position>0 ? Infinity : 0);
+    const orderUpTo = row.dailyRate*(leadTime+targetCover);
+    const netNeed = orderUpTo - position;
+    if(netNeed>0) needsRun++;
+    const dosColor = !isFinite(daysOfSupply) ? 'var(--ok)' : (daysOfSupply < leadTime ? 'var(--warn)' : 'var(--ok)');
+    const recBadge = netNeed>0
+      ? `<span class="pill order">Run ~${Math.ceil(netNeed).toLocaleString()} units</span>`
+      : `<span class="pill hold">No action</span>`;
+    const tr = document.createElement('tr');
+    const amzStockLabel = row.amzAvailable!==null ? row.amzAvailable.toLocaleString() : '—';
+    const amzDaysLabel = row.amzDaysLeft!==null ? (isFinite(row.amzDaysLeft)?row.amzDaysLeft.toFixed(0):'∞') : '—';
+    tr.innerHTML = `<td>${row.sku}</td><td style="white-space:normal; max-width:280px;">${(row.product||'').toString().split('\\n')[0].slice(0,70)}</td>
+      <td class="num">${row.qty90.toLocaleString()}</td>
+      <td class="num">${row.dailyRate.toFixed(2)}</td>
+      <td class="num">${row.onHand.toFixed(0)}</td>
+      <td class="num" style="color:${dosColor}; font-weight:600;">${isFinite(daysOfSupply)?daysOfSupply.toFixed(0):'∞'}</td>
+      <td class="num">${orderUpTo.toFixed(0)}</td>
+      <td class="num" style="color:${netNeed>0?'var(--warn)':'var(--ok)'}">${netNeed.toFixed(0)}</td>
+      <td>${recBadge}</td>
+      <td class="num">${amzStockLabel}</td>
+      <td class="num">${amzDaysLabel}</td>`;
+    tbody.appendChild(tr);
+  });
+  if(rows.length===0){
+    tbody.innerHTML = `<tr><td colspan="11" style="color:var(--muted); text-align:center; padding:24px;">No repacked SKUs with CIN7 sales detected for the currently-selected families.</td></tr>`;
+  }
+  document.getElementById('affiliateSummary').innerHTML = `
+    <div class="stat"><div class="v">${rows.length}</div><div class="l">Repacked SKUs sold to affiliate</div></div>
+    <div class="stat"><div class="v">${needsRun}</div><div class="l">Need a production run</div></div>
+  `;
+}
+document.getElementById('btn-recalc-affiliate').addEventListener('click', renderAffiliate);
+document.getElementById('affLeadTime').addEventListener('change', renderAffiliate);
+document.getElementById('affTargetCover').addEventListener('change', renderAffiliate);
 
 /* ---------------- Render: Demand ---------------- */
 function renderDemand(){
