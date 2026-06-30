@@ -33,20 +33,21 @@ nav button{
 }
 nav button.active{color:var(--ink); border-bottom-color:var(--accent); font-weight:600;}
 nav button:disabled{opacity:0.35; cursor:not-allowed;}
-main{padding:28px 32px 80px; max-width:1280px; margin:0 auto;}
+main{padding:28px 32px 80px; max-width:1640px; margin:0 auto;}
 .panel{display:none;}
 .panel.active{display:block;}
 h2{font-size:16px; margin:0 0 4px;}
 h3{font-size:13px; text-transform:uppercase; letter-spacing:0.06em; color:var(--muted); margin:28px 0 10px;}
-p.lead{color:var(--muted); margin:0 0 20px; max-width:760px;}
-.grid4{display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:16px;}
+p.lead{color:var(--muted); margin:0 0 20px; max-width:900px;}
+.grid4{display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,320px)); gap:16px;}
 .card{
   background:#fff; border:1px solid var(--line); padding:18px; border-radius:2px;
+  display:flex; flex-direction:column;
 }
-.card h4{margin:0 0 4px; font-size:13px;}
-.card .desc{color:var(--muted); font-size:12px; margin-bottom:12px;}
+.card h4{margin:0 0 4px; font-size:13px; line-height:1.35;}
+.card .desc{color:var(--muted); font-size:12px; margin-bottom:12px; line-height:1.5;}
 .card input[type=file]{display:block; width:100%; font-size:12px;}
-.status{font-family:var(--mono); font-size:11px; margin-top:10px; padding:6px 8px; border-radius:2px;}
+.status{font-family:var(--mono); font-size:11px; margin-top:10px; padding:6px 8px; border-radius:2px; line-height:1.5; word-break:break-word; white-space:normal;}
 .status.pending{color:var(--muted);}
 .status.ok{background:#eaf2ec; color:var(--ok);}
 .status.err{background:var(--accent-soft); color:var(--warn);}
@@ -61,10 +62,11 @@ button.ghost{
 }
 table{width:100%; border-collapse:collapse; font-size:12.5px; background:#fff;}
 th,td{padding:8px 10px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap;}
+td.wrap, th.wrap{white-space:normal;}
 th{font-family:var(--mono); font-size:10.5px; text-transform:uppercase; letter-spacing:0.04em; color:var(--muted); background:#fbfaf7; position:sticky; top:0;}
 tr:hover td{background:#fbfaf7;}
 .num{text-align:right; font-variant-numeric:tabular-nums;}
-.tablewrap{max-height:520px; overflow:auto; border:1px solid var(--line);}
+.tablewrap{max-height:640px; overflow:auto; border:1px solid var(--line);}
 .pill{font-family:var(--mono); font-size:10px; padding:2px 7px; border-radius:10px; display:inline-block;}
 .pill.raw{background:#eee4d8; color:#7a5230;}
 .pill.pkg{background:#dce6e2; color:#2f6b4f;}
@@ -470,7 +472,13 @@ function getScopedBulkSkus(){
   checked.forEach(idx=>{
     STATE.blocks[idx].rows.forEach(r=>{
       const sku = r.sku.replace(/-FBA$/,'');
-      skus.add(sku);
+      // NOTE: deliberately do NOT add `sku` itself here. A SKU sold directly on Amazon
+      // can ALSO be used as a BOM component of a different finished good (e.g. 600454,
+      // a 1lb retail bag, is also an ingredient of the 600942 variety pack). If we scoped
+      // every Amazon-listed SKU in regardless of brand, repacked retail items would leak
+      // back into "sold as-is" CIN7 demand via that second role — double-counting against
+      // the same Amazon sale Sellerboard already reports. Only the inner loop below, which
+      // checks the BOM brand of each component, should add anything to scope.
       (STATE.assemblyBOM[sku]||[]).forEach(c=>{
         const info = STATE.componentInfo[c.componentSku];
         if(info && info.brand && info.brand.toUpperCase() !== 'CAMBIE') skus.add(c.componentSku);
@@ -942,59 +950,66 @@ document.getElementById('btn-generate').addEventListener('click', ()=>{
 
   // Pool case-pack orders into full containers for any vendor with a container size
   // configured (e.g. Arcor: 49 cases/pallet × 22 pallets = 1,078 cases/container).
-  // Arcor requires full-container orders, so individual SKU net-needs are summed across
-  // the whole vendor, rounded up to the next container, and any leftover capacity is
-  // filled with overstock on the best-selling SKUs rather than left empty.
+  // Arcor requires full-container orders AND each SKU ships as whole pallets (mixed
+  // partial pallets aren't practical), so allocation happens in PALLET units, not cases:
+  // each SKU's net need rounds up to whole pallets first, then any extra pallets needed
+  // to fill out the container go to the best-selling SKUs as overstock — also in whole
+  // pallets, never partial.
   const containerNotes = {}; // vendor name -> summary string for display
   STATE.vendors.forEach(v=>{
-    const containerCases = (v.casesPerPallet||0) * (v.palletsPerContainer||0);
+    const casesPerPallet = v.casesPerPallet||0, palletsPerContainer = v.palletsPerContainer||0;
+    const containerCases = casesPerPallet * palletsPerContainer;
     if(!containerCases) return;
     const group = poRows.filter(r=> r.vendor===v.name && r.casePack);
     if(!group.length) return;
-    const neededCases = {};
-    group.forEach(r=> neededCases[r.sku] = r.netNeed>0 ? Math.ceil(r.netNeed / r.casePack.qtyPerCase) : 0);
-    const totalNeeded = Object.values(neededCases).reduce((a,b)=>a+b,0);
-    if(totalNeeded === 0){
-      containerNotes[v.name] = `No order currently needed — nothing meets the ${containerCases.toLocaleString()}-case container minimum.`;
+    const neededCases = {}, basePallets = {};
+    group.forEach(r=>{
+      const cases = r.netNeed>0 ? Math.ceil(r.netNeed / r.casePack.qtyPerCase) : 0;
+      neededCases[r.sku] = cases;
+      basePallets[r.sku] = Math.ceil(cases / casesPerPallet); // each SKU rounds to whole pallets
+    });
+    const totalBasePallets = Object.values(basePallets).reduce((a,b)=>a+b,0);
+    if(totalBasePallets === 0){
+      containerNotes[v.name] = `No order currently needed — nothing meets the ${containerCases.toLocaleString()}-case (${palletsPerContainer}-pallet) container minimum.`;
       return;
     }
-    const totalContainerCases = Math.ceil(totalNeeded / containerCases) * containerCases;
-    const surplus = totalContainerCases - totalNeeded;
-    const extra = {};
-    if(surplus > 0){
+    const totalContainerPallets = Math.ceil(totalBasePallets / palletsPerContainer) * palletsPerContainer;
+    const surplusPallets = totalContainerPallets - totalBasePallets;
+    const extraPallets = {};
+    if(surplusPallets > 0){
       const totalWeight = group.reduce((s,r)=>s+Math.max(r.daily,0),0);
       if(totalWeight > 0){
         let allocated = 0;
         group.forEach(r=>{
-          const share = Math.floor(surplus * (Math.max(r.daily,0)/totalWeight));
-          extra[r.sku] = share;
+          const share = Math.floor(surplusPallets * (Math.max(r.daily,0)/totalWeight));
+          extraPallets[r.sku] = share;
           allocated += share;
         });
-        let remainder = surplus - allocated;
+        let remainder = surplusPallets - allocated;
         const bySales = [...group].sort((a,b)=>b.daily-a.daily);
         let i = 0;
         while(remainder > 0 && bySales.length){
           const sku = bySales[i % bySales.length].sku;
-          extra[sku] = (extra[sku]||0) + 1;
+          extraPallets[sku] = (extraPallets[sku]||0) + 1;
           remainder--; i++;
         }
       } else {
-        // no sales velocity data at all — dump surplus on the single largest SKU by net need
-        const top = group.slice().sort((a,b)=>(neededCases[b.sku]||0)-(neededCases[a.sku]||0))[0];
-        if(top) extra[top.sku] = surplus;
+        const top = group.slice().sort((a,b)=>(basePallets[b.sku]||0)-(basePallets[a.sku]||0))[0];
+        if(top) extraPallets[top.sku] = surplusPallets;
       }
     }
     group.forEach(r=>{
       const cp = r.casePack;
-      const totalCases = (neededCases[r.sku]||0) + (extra[r.sku]||0);
+      const totalPallets = (basePallets[r.sku]||0) + (extraPallets[r.sku]||0);
+      const totalCases = totalPallets * casesPerPallet;
       r.orderQty = totalCases * cp.qtyPerCase;
       r.orderLabel = cp.caseSku;
-      r.overstockCases = extra[r.sku]||0;
-      r.caseInfo = totalCases + ' case(s) of ' + cp.qtyPerCase + (r.overstockCases>0 ? ` — incl. ${r.overstockCases} overstock case(s) to fill container` : '');
+      r.overstockCases = (extraPallets[r.sku]||0) * casesPerPallet;
+      r.caseInfo = totalCases + ' case(s) of ' + cp.qtyPerCase + ' = ' + totalPallets + ' pallet(s)' + (r.overstockCases>0 ? ` — incl. ${extraPallets[r.sku]} overstock pallet(s) to fill container` : '');
       r.needsOrder = totalCases>0;
     });
-    const containers = totalContainerCases/containerCases;
-    containerNotes[v.name] = `${totalNeeded.toLocaleString()} cases needed → rounded up to ${totalContainerCases.toLocaleString()} cases = ${containers.toLocaleString()} full container${containers!==1?'s':''} (${(totalContainerCases/v.casesPerPallet).toLocaleString()} pallets). ${surplus>0 ? surplus.toLocaleString()+' case(s) of container space filled as overstock on your best-selling SKUs.' : 'Fits exactly — no overstock needed.'}`;
+    const containers = totalContainerPallets/palletsPerContainer;
+    containerNotes[v.name] = `${totalBasePallets.toLocaleString()} pallet(s) needed (rounded per SKU) → rounded up to ${totalContainerPallets.toLocaleString()} pallets = ${containers.toLocaleString()} full container${containers!==1?'s':''} (${(totalContainerPallets*casesPerPallet).toLocaleString()} cases). ${surplusPallets>0 ? surplusPallets.toLocaleString()+' pallet(s) of container space filled as overstock on your best-selling SKUs.' : 'Fits exactly — no overstock needed.'}`;
   });
 
   RESULT = {finishedDemand, componentDaily, componentMonthly, seasonalActive, poRows, targetCover, defaultLead, containerNotes};
@@ -1146,25 +1161,25 @@ function renderPO(){
     const note = RESULT.containerNotes[vname];
     block.innerHTML = `<h3>${vname} — ${lead} day lead time</h3>` +
       (note ? `<p class="foot-note" style="margin:-4px 0 12px; padding:8px 10px; background:#fff; border:1px solid var(--line); border-left:3px solid var(--accent);">${note}</p>` : '');
-    const tw = document.createElement('div'); tw.className='tablewrap'; tw.style.maxHeight='420px';
+    const tw = document.createElement('div'); tw.className='tablewrap'; tw.style.maxHeight='640px';
     const table = document.createElement('table');
     table.innerHTML = `<thead><tr>
-      <th>SKU</th><th>Description</th><th class="num">Daily use</th>
+      <th style="min-width:90px;">SKU</th><th class="wrap" style="min-width:220px;">Description</th><th class="num">Daily use</th>
       <th class="num">On hand</th><th class="num">Available</th><th class="num">On order</th>
       <th class="num">Days of supply</th>
       <th class="num">Order-up-to</th><th class="num">Net need</th>
-      <th>Recommendation</th><th>Arrival if ordered today</th>
+      <th class="wrap" style="min-width:280px;">Recommendation</th><th>Arrival if ordered today</th>
     </tr></thead><tbody></tbody>`;
     const tbody = table.querySelector('tbody');
     rows.forEach(r=>{
       const tr = document.createElement('tr');
       const overstockTag = r.overstockCases>0 ? ' <span class="pill" style="background:#f0e2dc; color:var(--accent);">overstock fill</span>' : '';
       const recBadge = r.needsOrder
-        ? `<span class="pill order">Order ${r.orderQty.toLocaleString()}</span> <span style="color:var(--muted); font-size:11px;">${r.orderLabel}${r.caseInfo!=='—'?' ('+r.caseInfo+')':''}</span>${overstockTag}`
+        ? `<span class="pill order">Order ${r.orderQty.toLocaleString()}</span><br><span style="color:var(--muted); font-size:11px;">${r.orderLabel}${r.caseInfo!=='—'?' ('+r.caseInfo+')':''}</span>${overstockTag}`
         : `<span class="pill hold">No action</span>`;
       const dosLabel = !isFinite(r.daysOfSupply) ? '∞' : r.daysOfSupply.toFixed(0);
       const dosColor = !isFinite(r.daysOfSupply) ? 'var(--ok)' : (r.daysOfSupply < r.leadTime ? 'var(--warn)' : 'var(--ok)');
-      tr.innerHTML = `<td>${r.sku}</td><td style="white-space:normal; max-width:300px;">${r.desc}</td>
+      tr.innerHTML = `<td>${r.sku}</td><td class="wrap">${r.desc}</td>
         <td class="num">${r.daily.toFixed(2)}</td>
         <td class="num">${r.onHand.toFixed(0)}</td>
         <td class="num">${r.available.toFixed(0)}</td>
@@ -1172,7 +1187,7 @@ function renderPO(){
         <td class="num" style="color:${dosColor}; font-weight:600;">${dosLabel}</td>
         <td class="num">${r.orderUpTo.toFixed(0)}</td>
         <td class="num" style="color:${r.netNeed>0?'var(--warn)':'var(--ok)'}">${r.netNeed.toFixed(0)}</td>
-        <td>${recBadge}</td>
+        <td class="wrap">${recBadge}</td>
         <td>${r.needsOrder ? r.arrival.toLocaleDateString() : '—'}</td>`;
       tbody.appendChild(tr);
     });
